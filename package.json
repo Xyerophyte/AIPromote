@@ -18,13 +18,26 @@
     "type-check": "npm run type-check --workspace=frontend && npm run type-check --workspace=backend",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
-    "docker:logs": "docker-compose logs -f"
+    "docker:logs": "docker-compose logs -f",
+    "mcp:dev": "npm run dev --workspace=mcp-server",
+    "mcp:build": "npm run build --workspace=mcp-server",
+    "mcp:start": "npm run start --workspace=mcp-server",
+    "mcp:type-check": "npm run type-check --workspace=mcp-server",
+    "mcp:install": "npm install --workspace=mcp-server"
   },
   "workspaces": [
     "frontend",
     "backend",
-    "shared"
+    "shared",
+    "mcp-server"
   ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.1",
+    "@modelcontextprotocol/server-filesystem": "^2025.7.29",
+    "zod": "^3.23.8",
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0"
+  },
   "devDependencies": {
     "concurrently": "^8.2.2"
   },

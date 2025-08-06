@@ -1,0 +1,449 @@
+name: Comprehensive Testing Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run nightly tests at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  NODE_VERSION: '18'
+  DATABASE_URL: 'postgresql://test:test@localhost:5432/ai_promote_test'
+  REDIS_URL: 'redis://localhost:6379/1'
+  JWT_SECRET: 'test-jwt-secret-for-ci'
+  OPENAI_API_KEY: 'test-openai-key'
+  ANTHROPIC_API_KEY: 'test-anthropic-key'
+  STRIPE_SECRET_KEY: 'sk_test_mock_key'
+
+jobs:
+  # Code quality checks
+  lint-and-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run ESLint
+        run: npm run lint
+        continue-on-error: true
+      
+      - name: Check TypeScript
+        run: npm run type-check
+      
+      - name: Check Prettier formatting
+        run: npx prettier --check "src/**/*.{ts,js,json}"
+
+  # Unit tests
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['16', '18', '20']
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run unit tests
+        run: npm run test:unit -- --coverage
+        env:
+          NODE_ENV: test
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage/lcov.info
+          flags: unit-tests
+          name: unit-tests-node-${{ matrix.node-version }}
+
+  # Integration tests
+  integration-tests:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: ai_promote_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Setup database
+        run: |
+          npm run db:push
+          npm run db:seed
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+      
+      - name: Run integration tests
+        run: npm run test:integration -- --coverage
+        env:
+          NODE_ENV: test
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          REDIS_URL: ${{ env.REDIS_URL }}
+      
+      - name: Upload integration test coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage/lcov.info
+          flags: integration-tests
+          name: integration-tests
+
+  # E2E tests
+  e2e-tests:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: ai_promote_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Setup database
+        run: |
+          npm run db:push
+          npm run db:seed
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+      
+      - name: Build application
+        run: npm run build
+      
+      - name: Start application in background
+        run: |
+          npm start &
+          sleep 10
+        env:
+          NODE_ENV: test
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          REDIS_URL: ${{ env.REDIS_URL }}
+      
+      - name: Wait for application to be ready
+        run: |
+          timeout 60 bash -c 'until curl -f http://localhost:3000/health; do sleep 2; done'
+      
+      - name: Run E2E tests
+        run: npm run test:e2e
+        env:
+          CYPRESS_BASE_URL: http://localhost:3000
+      
+      - name: Upload Cypress screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cypress-screenshots
+          path: cypress/screenshots
+      
+      - name: Upload Cypress videos
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cypress-videos
+          path: cypress/videos
+
+  # Component tests
+  component-tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run component tests
+        run: npx cypress run --component
+      
+      - name: Upload component test results
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: component-test-results
+          path: cypress/screenshots
+
+  # Security scans
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run npm audit
+        run: npm audit --audit-level moderate
+        continue-on-error: true
+      
+      - name: Run Snyk security scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=medium
+        continue-on-error: true
+
+  # Load testing (only on main branch and schedule)
+  load-tests:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: ai_promote_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Setup database
+        run: |
+          npm run db:push
+          npm run db:seed
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+      
+      - name: Build and start application
+        run: |
+          npm run build
+          npm start &
+          sleep 15
+        env:
+          NODE_ENV: production
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          REDIS_URL: ${{ env.REDIS_URL }}
+      
+      - name: Install Artillery
+        run: npm install -g artillery
+      
+      - name: Run load tests
+        run: npm run test:load
+        continue-on-error: true
+      
+      - name: Upload load test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load-test-results
+          path: artillery-report.json
+
+  # Coverage reporting
+  coverage-report:
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests]
+    if: always()
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Generate combined coverage report
+        run: npm run coverage:report
+      
+      - name: Check coverage thresholds
+        run: npm run coverage:check
+        continue-on-error: true
+      
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: coverage/
+
+  # Build and test Docker image
+  docker-build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ai-promote-backend:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Test Docker image
+        run: |
+          docker run --rm ai-promote-backend:test npm test
+        env:
+          NODE_ENV: test
+
+  # Deployment readiness check
+  deployment-check:
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, e2e-tests, security-scan]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build for production
+        run: npm run build
+        env:
+          NODE_ENV: production
+      
+      - name: Check build artifacts
+        run: |
+          ls -la dist/
+          test -f dist/server.js
+          test -f dist/worker.js
+      
+      - name: Deployment readiness notification
+        if: success()
+        run: echo "✅ All tests passed - Ready for deployment"
+
+  # Cleanup
+  cleanup:
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, e2e-tests, component-tests, load-tests]
+    if: always()
+    
+    steps:
+      - name: Cleanup test artifacts
+        run: |
+          echo "Cleaning up test artifacts and temporary files"
+          # Add any cleanup commands here

@@ -10,23 +10,45 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================================
+// AUTHENTICATION & AUTHORIZATION MODELS
+// ============================================
+
 // User model for authentication
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  password  String?
-  image     String?
-  role      UserRole @default(USER)
-  verified  Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String         @id @default(cuid())
+  email            String         @unique
+  passwordHash     String?
+  name             String?
+  image            String?
+  plan             String         @default("free") // "free", "pro"
+  role             UserRole       @default(USER)
+  verified         Boolean        @default(false)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
 
   // OAuth accounts
-  accounts Account[]
-  sessions Session[]
+  accounts         Account[]
+  sessions         Session[]
+  
+  // Business relationships
+  organizations    Organization[]
+  subscriptions    Subscription[]
+  usage            Usage[]
+  paymentMethods   PaymentMethod[]
+  usageRecords     UsageRecord[]
+  
+  // Admin relationships
+  auditLogs        AuditLog[]
+  createdFeatureFlags FeatureFlag[]
+  supportTickets   SupportTicket[]
+  assignedTickets  SupportTicket[]   @relation("AssignedTickets")
+  ticketResponses  SupportTicketResponse[]
+  moderationQueue  ContentModerationQueue[]
+  moderatedContent ContentModerationQueue[] @relation("ModeratedContent")
 
   @@map("users")
+  @@index([email])
 }
 
 // Account model for OAuth providers
@@ -50,6 +72,7 @@ model Account {
 
   @@unique([provider, providerAccountId])
   @@map("accounts")
+  @@index([userId])
 }
 
 // Session model for session management
@@ -64,6 +87,7 @@ model Session {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("sessions")
+  @@index([userId])
 }
 
 // Verification token model
@@ -77,9 +101,1397 @@ model VerificationToken {
   @@map("verification_tokens")
 }
 
-// User roles enum
+// ============================================
+// CORE BUSINESS MODELS
+// ============================================
+
+// Organization model (renamed from Startup for clarity)
+model Organization {
+  id               String         @id @default(cuid())
+  userId           String
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  url              String?
+  stage            String?        // e.g., "pre-seed", "growth", "series-a"
+  pricing          String?
+  description      String?
+  tagline          String?
+  category         String?
+  markets          String[]       // e.g., ["US", "EU"]
+  languages        String[]       // e.g., ["en", "es"]
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  // Relationships
+  founders         Founder[]
+  aiStrategies     AIStrategy[]
+  contentPieces    ContentPiece[]
+  socialAccounts   SocialAccount[]
+  scheduledPosts   ScheduledPost[]
+  analytics        Analytics[]
+  brandRules       BrandRule?
+  assets           Asset[]
+  contentPillars   ContentPillar[]
+  series           Series[]
+  weeklySummaries  WeeklySummary[]
+  
+  // Scheduling and calendar relationships
+  scheduleTemplates    ScheduleTemplate[]
+  calendarEvents       CalendarEvent[]
+  optimalPostingTimes  OptimalPostingTime[]
+  schedulingConflicts  SchedulingConflict[]
+  calendarExports      CalendarExport[]
+
+  @@map("organizations")
+  @@index([userId])
+  @@index([name])
+  @@index([category])
+}
+
+// Founder model for capturing founder information
+model Founder {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  role           String?      // e.g., "CEO", "CTO", "Co-founder"
+  email          String?
+  linkedinUrl    String?
+  twitterHandle  String?
+  bio            String?      @db.Text
+  imageUrl       String?
+  isPrimary      Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@map("founders")
+  @@index([organizationId])
+  @@index([isPrimary])
+}
+
+// AI Strategy model for storing generated marketing strategies
+model AIStrategy {
+  id               String       @id @default(cuid())
+  organizationId   String
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  version          Int          @default(1)
+  status           StrategyStatus @default(PROPOSED)
+  
+  // Strategy content (JSON)
+  positioning      Json         // Positioning brief & messaging hierarchy
+  audienceSegments Json         // Array of audience segments + key messages
+  contentPillars   Json         // 3-5 content pillars
+  channelPlan      Json         // Channel strategy per platform
+  cadence          Json         // Cadence plan with optimal posting windows
+  calendarSkeleton Json         // 90-day content calendar skeleton
+  
+  generatedBy      String?      // AI model used
+  confidence       Float?       // Confidence score 0-1
+  acceptedAt       DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@map("ai_strategies")
+  @@index([organizationId])
+  @@index([status])
+  @@index([version])
+}
+
+// Content Piece model (renamed from ContentItem for clarity)
+model ContentPiece {
+  id             String        @id @default(cuid())
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  pillarId       String?
+  pillar         ContentPillar? @relation(fields: [pillarId], references: [id], onDelete: SetNull)
+  platform       Platform
+  status         ContentStatus @default(DRAFT)
+  type           ContentType   @default(POST)
+  
+  // Content details
+  title          String?
+  body           String        @db.Text
+  hashtags       String[]
+  mentions       String[]
+  cta            String?       // Call to action
+  hook           String?       // Opening hook
+  mediaRefs      Json?         // { image: s3Key, prompt: string }
+  
+  // Scheduling
+  scheduledAt    DateTime?
+  publishedAt    DateTime?
+  expiresAt      DateTime?
+  
+  // Series and sequencing
+  seriesId       String?
+  series         Series?       @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  sequenceNo     Int?
+  
+  // AI metadata
+  rationale      String?       @db.Text // Why this hook/format was chosen
+  confidence     Float?        // AI confidence score
+  generatedBy    String?       // AI model used
+  
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  // Relationships
+  scheduledPosts ScheduledPost[]
+  analytics      Analytics[]
+  calendarEvents CalendarEvent[]
+  moderationQueue ContentModerationQueue?
+
+  @@map("content_pieces")
+  @@index([organizationId])
+  @@index([platform])
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([publishedAt])
+  @@index([seriesId])
+}
+
+// Social Account model for connected social media accounts
+model SocialAccount {
+  id                    String       @id @default(cuid())
+  organizationId        String
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  platform              Platform
+  handle                String       // @username or profile handle
+  displayName           String?      // Full name or business name
+  profileUrl            String?      // Full profile URL
+  
+  // OAuth credentials (encrypted)
+  accessTokenEncrypted  String       @db.Text
+  refreshTokenEncrypted String?      @db.Text
+  tokenType             String?      // "Bearer", etc.
+  scope                 String?      // OAuth scope granted
+  expiresAt             DateTime?
+  
+  // Account metadata
+  accountId             String?      // Platform-specific account ID
+  followersCount        Int?         @default(0)
+  followingCount        Int?         @default(0)
+  postsCount            Int?         @default(0)
+  
+  // Status
+  isActive              Boolean      @default(true)
+  lastSyncAt            DateTime?
+  errorMessage          String?      // Last error if any
+  
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  // Relationships
+  scheduledPosts        ScheduledPost[]
+  analytics             Analytics[]
+
+  @@unique([organizationId, platform, handle])
+  @@map("social_accounts")
+  @@index([organizationId])
+  @@index([platform])
+  @@index([isActive])
+}
+
+// Scheduled Post model for managing post publishing
+model ScheduledPost {
+  id              String        @id @default(cuid())
+  organizationId  String
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contentPieceId  String
+  contentPiece    ContentPiece  @relation(fields: [contentPieceId], references: [id], onDelete: Cascade)
+  socialAccountId String
+  socialAccount   SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  
+  // Scheduling details
+  scheduledAt     DateTime
+  publishedAt     DateTime?
+  status          PostStatus    @default(SCHEDULED)
+  
+  // Platform-specific data
+  platformPostId  String?       // ID from the social platform after publishing
+  platformUrl     String?       // URL to the published post
+  
+  // Retry logic
+  attemptCount    Int           @default(0)
+  maxAttempts     Int           @default(3)
+  lastAttemptAt   DateTime?
+  errorMessage    String?       @db.Text
+  
+  // Idempotency
+  idempotencyKey  String        @unique
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relationships
+  analytics       Analytics[]
+  calendarEvent   CalendarEvent?
+  scheduleTemplate ScheduleTemplate? @relation(fields: [scheduleTemplateId], references: [id], onDelete: SetNull)
+  scheduleTemplateId String?
+
+  @@map("scheduled_posts")
+  @@index([organizationId])
+  @@index([contentPieceId])
+  @@index([socialAccountId])
+  @@index([scheduledAt])
+  @@index([status])
+  @@index([idempotencyKey])
+}
+
+// Analytics model for tracking post performance
+model Analytics {
+  id              String         @id @default(cuid())
+  organizationId  String
+  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contentPieceId  String?
+  contentPiece    ContentPiece?  @relation(fields: [contentPieceId], references: [id], onDelete: Cascade)
+  scheduledPostId String?
+  scheduledPost   ScheduledPost? @relation(fields: [scheduledPostId], references: [id], onDelete: Cascade)
+  socialAccountId String?
+  socialAccount   SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
+  
+  platform        Platform
+  metricType      MetricType     // "engagement", "reach", "conversion"
+  
+  // Engagement metrics
+  impressions     Int            @default(0)
+  likes           Int            @default(0)
+  comments        Int            @default(0)
+  shares          Int            @default(0)
+  saves           Int            @default(0)
+  clicks          Int            @default(0)
+  
+  // Reach metrics
+  reach           Int            @default(0)
+  followersDelta  Int            @default(0)
+  
+  // Conversion metrics
+  websiteClicks   Int            @default(0)
+  signups         Int            @default(0)
+  demos           Int            @default(0)
+  
+  // Time-based data
+  periodStart     DateTime
+  periodEnd       DateTime
+  collectedAt     DateTime       @default(now())
+  
+  // Calculated metrics
+  engagementRate  Float?         // Calculated engagement rate
+  ctr             Float?         // Click-through rate
+  
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@map("analytics")
+  @@index([organizationId])
+  @@index([contentPieceId])
+  @@index([platform])
+  @@index([metricType])
+  @@index([collectedAt])
+  @@index([periodStart, periodEnd])
+}
+
+// ============================================
+// SUPPORTING MODELS
+// ============================================
+
+// Brand Rule model for brand guidelines and compliance
+model BrandRule {
+  id               String       @id @default(cuid())
+  organizationId   String       @unique
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  
+  // Brand voice and tone
+  tone             String?      // e.g., "casual", "professional", "friendly"
+  voice            String?      @db.Text // Description of brand voice
+  
+  // Content guidelines
+  allowedPhrases   String[]     // Phrases to encourage
+  forbiddenPhrases String[]     // Phrases to avoid
+  allowedHashtags  String[]     // Approved hashtags
+  forbiddenHashtags String[]    // Hashtags to avoid
+  
+  // Compliance and legal
+  complianceNotes  String?      @db.Text
+  legalDisclaimer  String?      @db.Text
+  claimsToAvoid    String[]     // Performance claims to avoid
+  
+  // Approval settings
+  approvalMode     ApprovalMode @default(MANUAL)
+  autoApprovalRules Json?       // Conditions for auto-approval
+  
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@map("brand_rules")
+}
+
+// Asset model for storing media files
+model Asset {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  
+  // File details
+  filename       String
+  originalName   String
+  type           AssetType    // "logo", "screenshot", "video", "document"
+  mimeType       String
+  size           Int          // Size in bytes
+  
+  // Storage
+  s3Key          String       @unique
+  s3Bucket       String
+  url            String       // Public URL
+  
+  // Metadata
+  title          String?
+  description    String?      @db.Text
+  tags           String[]     // Searchable tags
+  
+  // Usage tracking
+  downloadCount  Int          @default(0)
+  lastUsedAt     DateTime?
+  
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@map("assets")
+  @@index([organizationId])
+  @@index([type])
+  @@index([tags])
+}
+
+// Content Pillar model
+model ContentPillar {
+  id             String         @id @default(cuid())
+  organizationId String
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String         // e.g., "Education", "Product Updates", "Founder Story"
+  description    String?        @db.Text
+  color          String?        // Hex color for UI
+  emoji          String?        // Emoji representation
+  isActive       Boolean        @default(true)
+  sortOrder      Int            @default(0)
+  
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  // Relationships
+  contentPieces  ContentPiece[]
+
+  @@map("content_pillars")
+  @@index([organizationId])
+  @@index([isActive])
+}
+
+// Series model for content series
+model Series {
+  id             String         @id @default(cuid())
+  organizationId String
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String         // e.g., "AI Tips Series", "Startup Journey"
+  description    String?        @db.Text
+  platform       Platform
+  cadence        String         // "daily", "weekly", "biweekly", "monthly"
+  totalPosts     Int
+  publishedPosts Int            @default(0)
+  status         SeriesStatus   @default(ACTIVE)
+  
+  // Scheduling
+  startDate      DateTime?
+  endDate        DateTime?
+  
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  // Relationships
+  contentPieces  ContentPiece[]
+
+  @@map("series")
+  @@index([organizationId])
+  @@index([platform])
+  @@index([status])
+}
+
+// Weekly Summary model for AI coach reports
+model WeeklySummary {
+  id              String       @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  weekStart       DateTime
+  weekEnd         DateTime
+  
+  // Summary content
+  reportMd        String       @db.Text // Markdown summary
+  recommendations Json?        // { strategyChanges, contentPivots }
+  keyInsights     Json?        // Key performance insights
+  
+  // Performance metrics
+  totalPosts      Int          @default(0)
+  avgEngagement   Float?       @default(0)
+  topPerformer    String?      // ID of best performing post
+  
+  // Status
+  accepted        Boolean      @default(false)
+  acceptedAt      DateTime?
+  
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@map("weekly_summaries")
+  @@index([organizationId])
+  @@index([weekStart])
+  @@index([accepted])
+}
+
+// Subscription Plans model
+model SubscriptionPlan {
+  id              String    @id @default(cuid())
+  name            String    @unique // "Starter", "Growth", "Scale"
+  displayName     String    // "Starter Plan", "Growth Plan", "Scale Plan"
+  description     String?   @db.Text
+  priceMonthly    Int       // Price in cents (e.g., 2900 for $29.00)
+  priceYearly     Int?      // Price in cents for yearly billing
+  stripePriceId   String?   @unique // Stripe Price ID
+  stripeProductId String?   @unique // Stripe Product ID
+  
+  // Plan limits
+  limits          Json      // { postsPerMonth: 50, strategies: 3, organizations: 2, analytics: true }
+  features        String[]  // List of included features
+  
+  // Plan metadata
+  isActive        Boolean   @default(true)
+  sortOrder       Int       @default(0)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  // Relationships
+  subscriptions   Subscription[]
+  
+  @@map("subscription_plans")
+  @@index([isActive])
+  @@index([sortOrder])
+}
+
+// Subscription model for billing
+model Subscription {
+  id                 String             @id @default(cuid())
+  userId             String
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId             String
+  plan               SubscriptionPlan   @relation(fields: [planId], references: [id])
+  status             SubscriptionStatus // "active", "cancelled", "past_due", "trialing", "incomplete", "unpaid"
+  
+  // Stripe integration
+  stripeSubscriptionId String?          @unique // Stripe subscription ID
+  stripeCustomerId     String?          // Stripe customer ID
+  stripeSessionId      String?          // Checkout session ID
+  
+  // Billing details
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean          @default(false)
+  cancelledAt          DateTime?
+  trialStart           DateTime?
+  trialEnd             DateTime?
+  
+  // Payment details
+  billingCycleAnchor   DateTime?
+  nextPaymentDate      DateTime?
+  lastPaymentDate      DateTime?
+  lastPaymentAmount    Int?             // Amount in cents
+  
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+  
+  // Relationships
+  invoices             Invoice[]
+  paymentMethods       PaymentMethod[]
+  usageRecords         UsageRecord[]
+  
+  @@map("subscriptions")
+  @@index([userId])
+  @@index([status])
+  @@index([stripeSubscriptionId])
+  @@index([stripeCustomerId])
+}
+
+// Invoice model for billing history
+model Invoice {
+  id                String        @id @default(cuid())
+  subscriptionId    String
+  subscription      Subscription  @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  
+  // Stripe integration
+  stripeInvoiceId   String        @unique
+  stripePaymentIntentId String?
+  
+  // Invoice details
+  invoiceNumber     String        @unique
+  status            InvoiceStatus // "draft", "open", "paid", "void", "uncollectible"
+  description       String?
+  
+  // Amounts (in cents)
+  subtotal          Int
+  tax               Int           @default(0)
+  discount          Int           @default(0)
+  total             Int
+  amountPaid        Int           @default(0)
+  amountDue         Int           @default(0)
+  
+  // Dates
+  issueDate         DateTime
+  dueDate           DateTime?
+  paidAt            DateTime?
+  voidedAt          DateTime?
+  
+  // Billing period
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  
+  // Payment details
+  currency          String        @default("usd")
+  paymentMethod     String?       // "card", "ach", "wire", etc.
+  
+  // URLs
+  hostedInvoiceUrl  String?
+  invoicePdf        String?
+  
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  
+  @@map("invoices")
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([issueDate])
+  @@index([stripeInvoiceId])
+}
+
+// Payment Method model
+model PaymentMethod {
+  id                String       @id @default(cuid())
+  userId            String
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscriptionId    String?
+  subscription      Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  
+  // Stripe integration
+  stripePaymentMethodId String   @unique
+  
+  // Payment method details
+  type              String       // "card", "bank_account", "sepa_debit", etc.
+  brand             String?      // "visa", "mastercard", "amex", etc.
+  last4             String?      // Last 4 digits of card/account
+  expMonth          Int?
+  expYear           Int?
+  
+  // Card details
+  cardFingerprint   String?
+  cardCountry       String?
+  cardFunding       String?      // "credit", "debit", "prepaid", "unknown"
+  
+  // Bank account details
+  bankName          String?
+  accountType       String?      // "checking", "savings"
+  routingNumber     String?
+  
+  // Status
+  isDefault         Boolean      @default(false)
+  isActive          Boolean      @default(true)
+  
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  
+  @@map("payment_methods")
+  @@index([userId])
+  @@index([subscriptionId])
+  @@index([stripePaymentMethodId])
+  @@index([isDefault])
+}
+
+// Usage Record model for metering
+model UsageRecord {
+  id             String       @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Usage details
+  metricType     UsageMetricType // "posts_generated", "posts_published", "strategies_generated", "api_calls"
+  quantity       Int             // Number of units consumed
+  unitPrice      Int?            // Price per unit in cents (for usage-based billing)
+  totalAmount    Int?            // Total cost in cents
+  
+  // Time period
+  periodStart    DateTime
+  periodEnd      DateTime
+  recordedAt     DateTime        @default(now())
+  
+  // Metadata
+  metadata       Json?           // Additional usage context
+  organizationId String?
+  
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  
+  @@map("usage_records")
+  @@index([subscriptionId])
+  @@index([userId])
+  @@index([metricType])
+  @@index([periodStart, periodEnd])
+  @@index([recordedAt])
+}
+
+// Billing Event model for audit trail
+model BillingEvent {
+  id             String           @id @default(cuid())
+  userId         String?
+  subscriptionId String?
+  invoiceId      String?
+  
+  // Event details
+  eventType      BillingEventType // "subscription_created", "payment_succeeded", "invoice_paid", etc.
+  status         String           // "success", "failed", "pending"
+  description    String?
+  
+  // Stripe event
+  stripeEventId  String?          @unique
+  stripeEventType String?
+  
+  // Event data
+  data           Json?            // Event payload
+  errorMessage   String?          @db.Text
+  
+  // Timestamps
+  eventTime      DateTime         @default(now())
+  processedAt    DateTime?
+  
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  
+  @@map("billing_events")
+  @@index([userId])
+  @@index([subscriptionId])
+  @@index([eventType])
+  @@index([eventTime])
+  @@index([stripeEventId])
+}
+
+// Usage model for tracking plan limits
+model Usage {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  month           DateTime // First day of the month
+  
+  // Usage counters
+  postsGenerated  Int      @default(0)
+  postsPublished  Int      @default(0)
+  strategiesGenerated Int  @default(0)
+  organizationsCreated Int @default(0)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, month])
+  @@map("usage")
+  @@index([userId])
+  @@index([month])
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
 enum UserRole {
   USER
   ADMIN
   MODERATOR
+}
+
+enum Platform {
+  TWITTER
+  LINKEDIN
+  INSTAGRAM
+  TIKTOK
+  YOUTUBE_SHORTS
+  REDDIT
+  FACEBOOK
+  THREADS
+}
+
+enum ContentStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  SCHEDULED
+  PUBLISHED
+  FAILED
+  ARCHIVED
+}
+
+enum ContentType {
+  POST
+  THREAD
+  STORY
+  REEL
+  SHORT
+  CAROUSEL
+  POLL
+}
+
+enum PostStatus {
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELLED
+  RETRYING
+}
+
+enum StrategyStatus {
+  PROPOSED
+  ACTIVE
+  ARCHIVED
+  REJECTED
+}
+
+enum MetricType {
+  ENGAGEMENT
+  REACH
+  CONVERSION
+  GROWTH
+}
+
+enum ApprovalMode {
+  AUTO
+  MANUAL
+  CONDITIONAL
+}
+
+enum AssetType {
+  LOGO
+  SCREENSHOT
+  VIDEO
+  DOCUMENT
+  IMAGE
+  AVATAR
+  BANNER
+  CASE_STUDY
+}
+
+enum SeriesStatus {
+  ACTIVE
+  COMPLETED
+  PAUSED
+  CANCELLED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  PAST_DUE
+  TRIALING
+  INCOMPLETE
+  UNPAID
+}
+
+// ============================================
+// SCHEDULING AND CALENDAR MODELS
+// ============================================
+
+// Schedule Template model for recurring and bulk scheduling
+model ScheduleTemplate {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  
+  name           String
+  description    String?      @db.Text
+  isActive       Boolean      @default(true)
+  
+  // Template configuration
+  platforms      Platform[]   // Target platforms
+  scheduleType   ScheduleType // RECURRING, BULK, OPTIMAL_TIME
+  timeZone       String       // IANA timezone string
+  
+  // Recurring schedule settings
+  recurringConfig Json?       // { frequency, interval, daysOfWeek, timeslots, endDate }
+  
+  // Optimal time settings
+  optimalTimeConfig Json?     // { analysisWindow, audienceTimezone, metrics }
+  
+  // Bulk schedule settings
+  bulkConfig     Json?        // { timeSlots, distribution, spacing }
+  
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  
+  // Relationships
+  scheduledPosts ScheduledPost[]
+  
+  @@map("schedule_templates")
+  @@index([organizationId])
+  @@index([isActive])
+  @@index([scheduleType])
+}
+
+// Calendar Event model for calendar interface
+model CalendarEvent {
+  id               String       @id @default(cuid())
+  organizationId   String
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  
+  title            String
+  description      String?      @db.Text
+  eventType        EventType    @default(POST_SCHEDULED)
+  status           EventStatus  @default(ACTIVE)
+  
+  // Time and location
+  startTime        DateTime
+  endTime          DateTime?
+  timeZone         String       // IANA timezone string
+  isAllDay         Boolean      @default(false)
+  
+  // Recurrence
+  isRecurring      Boolean      @default(false)
+  recurrenceRule   String?      // RFC5545 RRULE string
+  parentEventId    String?      // For recurring event instances
+  parentEvent      CalendarEvent? @relation("RecurringEvents", fields: [parentEventId], references: [id], onDelete: Cascade)
+  childEvents      CalendarEvent[] @relation("RecurringEvents")
+  
+  // Relationships
+  scheduledPostId  String?      @unique
+  scheduledPost    ScheduledPost? @relation(fields: [scheduledPostId], references: [id], onDelete: Cascade)
+  contentPieceId   String?
+  contentPiece     ContentPiece? @relation(fields: [contentPieceId], references: [id], onDelete: SetNull)
+  
+  // Metadata
+  metadata         Json?        // Additional event data
+  tags             String[]
+  color            String?      // Hex color for UI
+  
+  // Conflict detection
+  hasConflicts     Boolean      @default(false)
+  conflictsWith    String[]     // IDs of conflicting events
+  
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  
+  @@map("calendar_events")
+  @@index([organizationId])
+  @@index([startTime])
+  @@index([eventType])
+  @@index([status])
+  @@index([isRecurring])
+  @@index([parentEventId])
+  @@index([tags])
+}
+
+// Optimal Posting Time model for analytics and suggestions
+model OptimalPostingTime {
+  id               String       @id @default(cuid())
+  organizationId   String
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  
+  platform         Platform
+  dayOfWeek        Int          // 0 = Sunday, 1 = Monday, etc.
+  hour             Int          // 0-23
+  timeZone         String       // IANA timezone string
+  
+  // Performance metrics
+  score            Float        // 0-1 performance score
+  avgEngagement    Float        @default(0)
+  avgReach         Float        @default(0)
+  avgClicks        Float        @default(0)
+  
+  // Analysis data
+  sampleSize       Int          @default(0)
+  confidence       Float        @default(0) // Statistical confidence
+  lastAnalyzed     DateTime     @default(now())
+  
+  // Audience analysis
+  audienceActivity Json?        // Audience activity patterns
+  competitorData   Json?        // Competitor posting patterns
+  
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  
+  @@unique([organizationId, platform, dayOfWeek, hour, timeZone])
+  @@map("optimal_posting_times")
+  @@index([organizationId])
+  @@index([platform])
+  @@index([score])
+}
+
+// Scheduling Conflict model for conflict detection
+model SchedulingConflict {
+  id               String          @id @default(cuid())
+  organizationId   String
+  organization     Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  
+  conflictType     ConflictType
+  severity         ConflictSeverity @default(MEDIUM)
+  status           ConflictStatus   @default(ACTIVE)
+  
+  // Conflict details
+  description      String          @db.Text
+  affectedTime     DateTime
+  timeZone         String
+  
+  // Related entities
+  relatedEvents    String[]        // Event IDs involved in conflict
+  relatedPosts     String[]        // Scheduled post IDs involved
+  
+  // Resolution
+  resolution       String?         @db.Text
+  resolvedBy       String?         // User ID who resolved
+  resolvedAt       DateTime?
+  
+  // Metadata
+  metadata         Json?           // Additional conflict data
+  
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  
+  @@map("scheduling_conflicts")
+  @@index([organizationId])
+  @@index([conflictType])
+  @@index([status])
+  @@index([affectedTime])
+  @@index([severity])
+}
+
+// Calendar Export model for tracking exports
+model CalendarExport {
+  id               String       @id @default(cuid())
+  organizationId   String
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  
+  exportType       ExportType
+  format           ExportFormat
+  status           ExportStatus @default(PENDING)
+  
+  // Export settings
+  startDate        DateTime
+  endDate          DateTime
+  timeZone         String
+  includeEvents    EventType[]  // Which event types to include
+  platforms        Platform[]   // Which platforms to include
+  
+  // Export results
+  fileName         String?
+  fileSize         Int?         // Size in bytes
+  downloadUrl      String?      // Temporary download URL
+  expiresAt        DateTime?    // When download URL expires
+  
+  // Error handling
+  errorMessage     String?      @db.Text
+  
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  
+  @@map("calendar_exports")
+  @@index([organizationId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum ScheduleType {
+  RECURRING
+  BULK
+  OPTIMAL_TIME
+  MANUAL
+}
+
+enum EventType {
+  POST_SCHEDULED
+  POST_PUBLISHED
+  CONTENT_DEADLINE
+  CAMPAIGN_START
+  CAMPAIGN_END
+  REVIEW_DUE
+  MEETING
+  CUSTOM
+}
+
+enum EventStatus {
+  ACTIVE
+  CANCELLED
+  COMPLETED
+  POSTPONED
+}
+
+enum ConflictType {
+  TIME_OVERLAP
+  PLATFORM_LIMIT
+  CONTENT_SIMILAR
+  AUDIENCE_FATIGUE
+  RATE_LIMIT
+  RESOURCE_CONFLICT
+}
+
+enum ConflictSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ConflictStatus {
+  ACTIVE
+  RESOLVED
+  IGNORED
+  POSTPONED
+}
+
+enum ExportType {
+  CALENDAR
+  SCHEDULE
+  ANALYTICS
+  FULL_REPORT
+}
+
+enum ExportFormat {
+  ICAL
+  CSV
+  JSON
+  PDF
+}
+
+enum ExportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+// ============================================
+// BILLING ENUMS
+// ============================================
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  VOID
+  UNCOLLECTIBLE
+}
+
+enum UsageMetricType {
+  POSTS_GENERATED
+  POSTS_PUBLISHED
+  STRATEGIES_GENERATED
+  API_CALLS
+  ORGANIZATIONS_CREATED
+  ANALYTICS_REQUESTS
+}
+
+enum BillingEventType {
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_UPDATED
+  SUBSCRIPTION_CANCELLED
+  PAYMENT_SUCCEEDED
+  PAYMENT_FAILED
+  INVOICE_CREATED
+  INVOICE_PAID
+  INVOICE_FAILED
+  TRIAL_STARTED
+  TRIAL_ENDED
+  PLAN_CHANGED
+  PAYMENT_METHOD_ATTACHED
+  PAYMENT_METHOD_DETACHED
+}
+
+// ============================================
+// ADMIN MANAGEMENT MODELS
+// ============================================
+
+// Audit Log model for tracking all admin and user actions
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  // Action details
+  action     String   // "USER_UPDATE", "CONTENT_APPROVE", "FEATURE_FLAG_CREATE", etc.
+  resource   String?  // "User", "ContentPiece", "FeatureFlag", etc.
+  resourceId String?  // ID of the resource affected
+  
+  // Additional context
+  details    Json?    // JSON object with action-specific details
+  ipAddress  String?
+  userAgent  String?
+  
+  createdAt  DateTime @default(now())
+  
+  @@map("audit_logs")
+  @@index([userId])
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+  @@index([resourceId])
+}
+
+// Feature Flag model for A/B testing and feature rollouts
+model FeatureFlag {
+  id                String   @id @default(cuid())
+  name              String   @unique
+  description       String?
+  enabled           Boolean  @default(false)
+  
+  // Rollout configuration
+  rolloutPercentage Int      @default(100) // 0-100
+  targetUsers       String[] // User IDs to specifically target
+  conditions        Json?    // Conditions for flag activation
+  
+  // Metadata
+  createdBy         String
+  createdByUser     User     @relation(fields: [createdBy], references: [id])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@map("feature_flags")
+  @@index([name])
+  @@index([enabled])
+  @@index([createdBy])
+}
+
+// Support Ticket model for customer support
+model SupportTicket {
+  id          String              @id @default(cuid())
+  userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Ticket details
+  subject     String
+  description String              @db.Text
+  priority    SupportPriority     @default(MEDIUM)
+  status      SupportStatus       @default(OPEN)
+  category    SupportCategory     @default(GENERAL)
+  
+  // Assignment
+  assignedTo      String?
+  assignedToUser  User?           @relation("AssignedTickets", fields: [assignedTo], references: [id], onDelete: SetNull)
+  
+  // Metadata
+  tags        String[]
+  attachments Json?               // File attachments metadata
+  
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  resolvedAt  DateTime?
+  closedAt    DateTime?
+  
+  // Relationships
+  responses   SupportTicketResponse[]
+  
+  @@map("support_tickets")
+  @@index([userId])
+  @@index([status])
+  @@index([priority])
+  @@index([assignedTo])
+  @@index([category])
+  @@index([createdAt])
+}
+
+// Support Ticket Response model
+model SupportTicketResponse {
+  id         String        @id @default(cuid())
+  ticketId   String
+  ticket     SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Response details
+  content    String        @db.Text
+  isInternal Boolean       @default(false) // Internal note vs customer-facing response
+  userType   ResponseUserType @default(CUSTOMER) // CUSTOMER, ADMIN, SYSTEM
+  
+  // Metadata
+  attachments Json?
+  
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  
+  @@map("support_ticket_responses")
+  @@index([ticketId])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([userType])
+}
+
+// Content Moderation Queue model
+model ContentModerationQueue {
+  id              String              @id @default(cuid())
+  contentPieceId  String              @unique
+  contentPiece    ContentPiece        @relation(fields: [contentPieceId], references: [id], onDelete: Cascade)
+  
+  // Moderation details
+  status          ModerationStatus    @default(PENDING)
+  priority        ModerationPriority  @default(MEDIUM)
+  reason          String?             // Reason for flagging
+  automatedFlags  Json?               // AI-detected issues
+  
+  // Assignment
+  assignedTo      String?
+  assignedToUser  User?               @relation(fields: [assignedTo], references: [id], onDelete: SetNull)
+  
+  // Resolution
+  moderatedBy     String?
+  moderatedByUser User?               @relation("ModeratedContent", fields: [moderatedBy], references: [id], onDelete: SetNull)
+  moderationNote  String?             @db.Text
+  moderatedAt     DateTime?
+  
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  
+  @@map("content_moderation_queue")
+  @@index([status])
+  @@index([priority])
+  @@index([assignedTo])
+  @@index([createdAt])
+}
+
+// System Health Metrics model
+model SystemHealthMetric {
+  id        String              @id @default(cuid())
+  metric    SystemMetricType
+  value     Float
+  unit      String?             // "bytes", "ms", "count", etc.
+  status    HealthStatus        @default(HEALTHY)
+  
+  // Metadata
+  details   Json?
+  tags      String[]
+  
+  createdAt DateTime            @default(now())
+  
+  @@map("system_health_metrics")
+  @@index([metric])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Admin Notification model
+model AdminNotification {
+  id        String                @id @default(cuid())
+  type      AdminNotificationType
+  severity  NotificationSeverity  @default(INFO)
+  title     String
+  message   String                @db.Text
+  
+  // Targeting
+  targetRoles String[]            // ["ADMIN", "MODERATOR"]
+  targetUsers String[]            // Specific user IDs
+  
+  // Status
+  read      Boolean               @default(false)
+  readBy    String[]              // User IDs who have read this
+  dismissed Boolean               @default(false)
+  
+  // Metadata
+  actionUrl String?               // URL to take action
+  metadata  Json?
+  
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+  expiresAt DateTime?
+  
+  @@map("admin_notifications")
+  @@index([type])
+  @@index([severity])
+  @@index([read])
+  @@index([createdAt])
+}
+
+// ============================================
+// ADMIN ENUMS
+// ============================================
+
+enum SupportPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum SupportStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_FOR_USER
+  RESOLVED
+  CLOSED
+}
+
+enum SupportCategory {
+  GENERAL
+  TECHNICAL
+  BILLING
+  FEATURE_REQUEST
+  BUG_REPORT
+  ACCOUNT
+  CONTENT
+}
+
+enum ResponseUserType {
+  CUSTOMER
+  ADMIN
+  SYSTEM
+}
+
+enum ModerationStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  ESCALATED
+}
+
+enum ModerationPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum SystemMetricType {
+  CPU_USAGE
+  MEMORY_USAGE
+  DISK_USAGE
+  DATABASE_CONNECTIONS
+  RESPONSE_TIME
+  ERROR_RATE
+  ACTIVE_USERS
+  QUEUE_SIZE
+  FAILED_JOBS
+}
+
+enum HealthStatus {
+  HEALTHY
+  WARNING
+  CRITICAL
+  UNKNOWN
+}
+
+enum AdminNotificationType {
+  SYSTEM_ALERT
+  MODERATION_REQUIRED
+  SUPPORT_TICKET
+  USER_REPORT
+  PAYMENT_ISSUE
+  FEATURE_FLAG
+  SECURITY_ALERT
+  PERFORMANCE_ALERT
+}
+
+enum NotificationSeverity {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
 }

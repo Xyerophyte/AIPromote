@@ -156,3 +156,5 @@ shared/dist/
 # Local development files
 .env.development
 .env.local
+.env.production
+.env.staging
