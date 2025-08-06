@@ -5,9 +5,17 @@ import rateLimit from '@fastify/rate-limit';
 import { config } from './config/config';
 
 const server = fastify({
-  logger: {
+  logger: config.nodeEnv === 'development' ? {
     level: config.logLevel,
-    prettyPrint: config.nodeEnv === 'development'
+    transport: {
+      target: 'pino-pretty',
+      options: {
+        translateTime: 'HH:MM:ss Z',
+        ignore: 'pid,hostname'
+      }
+    }
+  } : {
+    level: config.logLevel
   }
 });
 
