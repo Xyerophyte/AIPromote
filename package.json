@@ -1,0 +1,40 @@
+{
+  "name": "ai-promote",
+  "private": true,
+  "version": "1.0.0",
+  "description": "AI Promote - Monorepo with Next.js frontend and Fastify backend",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:backend": "npm run dev --workspace=backend",
+    "build": "npm run build --workspace=frontend && npm run build --workspace=backend",
+    "build:frontend": "npm run build --workspace=frontend",
+    "build:backend": "npm run build --workspace=backend",
+    "start": "concurrently \"npm run start:frontend\" \"npm run start:backend\"",
+    "start:frontend": "npm run start --workspace=frontend",
+    "start:backend": "npm run start --workspace=backend",
+    "test": "npm run test --workspace=frontend && npm run test --workspace=backend",
+    "lint": "npm run lint --workspace=frontend && npm run lint --workspace=backend",
+    "type-check": "npm run type-check --workspace=frontend && npm run type-check --workspace=backend",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f"
+  },
+  "workspaces": [
+    "frontend",
+    "backend",
+    "shared"
+  ],
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "keywords": [
+    "monorepo",
+    "nextjs",
+    "fastify",
+    "typescript",
+    "react"
+  ],
+  "author": "",
+  "license": "MIT"
+}
