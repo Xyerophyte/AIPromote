@@ -1,6 +1,9 @@
 import { PrismaClient, Platform, MetricType } from '@prisma/client';
 import { TwitterService } from './twitter-api';
 import { LinkedInService } from './linkedin-api';
+import { FacebookService } from './facebook-api';
+import { BufferService } from './buffer-api';
+import { HootsuiteService } from './hootsuite-api';
 import { addAnalyticsJob } from '../config/redis';
 import { AnalyticsService } from './analytics-service';
 import { CompetitorAnalysisService } from './competitor-analysis';
@@ -133,9 +136,25 @@ export class AnalyticsCollector {
             scheduledPost.platformPostId
           );
           break;
+        case Platform.FACEBOOK:
+          platformAnalytics = await this.collectFacebookAnalytics(
+            scheduledPost.socialAccount,
+            scheduledPost.platformPostId
+          );
+          break;
+        case Platform.INSTAGRAM:
+          platformAnalytics = await this.collectInstagramAnalytics(
+            scheduledPost.socialAccount,
+            scheduledPost.platformPostId
+          );
+          break;
         default:
-          console.warn(`Unsupported platform: ${scheduledPost.socialAccount.platform}`);
-          return;
+          // Try third-party services
+          platformAnalytics = await this.collectThirdPartyAnalytics(
+            scheduledPost.socialAccount,
+            scheduledPost.platformPostId
+          );
+          break;
       }
 
       // Store analytics in database
@@ -502,6 +521,173 @@ export class AnalyticsCollector {
       engagementRate: 0,
       ctr: 0,
     };
+  }
+
+  /**
+   * Collect Facebook analytics
+   */
+  private async collectFacebookAnalytics(
+    socialAccount: any,
+    postId: string
+  ): Promise<PlatformAnalytics> {
+    try {
+      const facebookService = await FacebookService.createWithEncryptedCredentials(
+        socialAccount.accessTokenEncrypted,
+        socialAccount.pageId,
+        socialAccount.instagramAccountId,
+        socialAccount.expiresAt
+      );
+
+      const analytics = await facebookService.getFacebookPostAnalytics(postId);
+
+      return {
+        impressions: analytics.impressions,
+        likes: analytics.likes,
+        comments: analytics.comments,
+        shares: analytics.shares,
+        clicks: analytics.clicks,
+        reach: analytics.reach,
+        engagementRate: this.calculateEngagementRate(
+          analytics.engagement,
+          analytics.impressions
+        ),
+        ctr: this.calculateCTR(analytics.clicks, analytics.impressions),
+      };
+    } catch (error: any) {
+      console.error('Error collecting Facebook analytics:', error);
+      return this.getZeroAnalytics();
+    }
+  }
+
+  /**
+   * Collect Instagram analytics
+   */
+  private async collectInstagramAnalytics(
+    socialAccount: any,
+    mediaId: string
+  ): Promise<PlatformAnalytics> {
+    try {
+      const facebookService = await FacebookService.createWithEncryptedCredentials(
+        socialAccount.accessTokenEncrypted,
+        socialAccount.pageId,
+        socialAccount.instagramAccountId,
+        socialAccount.expiresAt
+      );
+
+      const analytics = await facebookService.getInstagramPostAnalytics(mediaId);
+
+      return {
+        impressions: analytics.impressions,
+        likes: analytics.likes,
+        comments: analytics.comments,
+        shares: analytics.shares,
+        clicks: analytics.clicks || 0,
+        reach: analytics.reach,
+        engagementRate: this.calculateEngagementRate(
+          analytics.engagement,
+          analytics.impressions
+        ),
+        ctr: 0, // Instagram doesn't typically provide CTR for regular posts
+      };
+    } catch (error: any) {
+      console.error('Error collecting Instagram analytics:', error);
+      return this.getZeroAnalytics();
+    }
+  }
+
+  /**
+   * Collect analytics from third-party services
+   */
+  private async collectThirdPartyAnalytics(
+    socialAccount: any,
+    postId: string
+  ): Promise<PlatformAnalytics> {
+    try {
+      // Try Buffer first
+      if (socialAccount.thirdPartyService === 'BUFFER') {
+        return await this.collectBufferAnalytics(socialAccount, postId);
+      }
+      
+      // Try Hootsuite
+      if (socialAccount.thirdPartyService === 'HOOTSUITE') {
+        return await this.collectHootsuiteAnalytics(socialAccount, postId);
+      }
+
+      // If no third-party service is configured, return zero analytics
+      console.warn(`No supported third-party service for analytics collection: ${socialAccount.platform}`);
+      return this.getZeroAnalytics();
+    } catch (error: any) {
+      console.error('Error collecting third-party analytics:', error);
+      return this.getZeroAnalytics();
+    }
+  }
+
+  /**
+   * Collect Buffer analytics
+   */
+  private async collectBufferAnalytics(
+    socialAccount: any,
+    updateId: string
+  ): Promise<PlatformAnalytics> {
+    try {
+      const bufferService = await BufferService.createWithEncryptedCredentials(
+        socialAccount.accessTokenEncrypted
+      );
+
+      const analytics = await bufferService.getUpdateInteractions(updateId);
+
+      return {
+        impressions: analytics.reach || 0,
+        likes: analytics.favorites || 0,
+        comments: analytics.comments || 0,
+        shares: analytics.retweets || analytics.shares || 0,
+        clicks: analytics.clicks || 0,
+        reach: analytics.reach || 0,
+        engagementRate: analytics.engagementRate || this.calculateEngagementRate(
+          (analytics.favorites || 0) + (analytics.comments || 0) + (analytics.retweets || 0),
+          analytics.reach || 0
+        ),
+        ctr: this.calculateCTR(analytics.clicks || 0, analytics.reach || 0),
+      };
+    } catch (error: any) {
+      console.error('Error collecting Buffer analytics:', error);
+      return this.getZeroAnalytics();
+    }
+  }
+
+  /**
+   * Collect Hootsuite analytics
+   */
+  private async collectHootsuiteAnalytics(
+    socialAccount: any,
+    messageId: string
+  ): Promise<PlatformAnalytics> {
+    try {
+      const hootsuiteService = await HootsuiteService.createWithEncryptedCredentials(
+        socialAccount.accessTokenEncrypted,
+        socialAccount.refreshTokenEncrypted,
+        socialAccount.expiresAt
+      );
+
+      const analytics = await hootsuiteService.getMessageAnalytics(messageId);
+
+      return {
+        impressions: analytics.impressions || 0,
+        likes: analytics.likes || 0,
+        comments: analytics.comments || 0,
+        shares: analytics.shares || 0,
+        clicks: analytics.clicks || 0,
+        reach: analytics.reach || 0,
+        engagementRate: this.calculateEngagementRate(
+          (analytics.engagement || 0),
+          analytics.impressions || 0
+        ),
+        ctr: this.calculateCTR(analytics.clicks || 0, analytics.impressions || 0),
+      };
+    } catch (error: any) {
+      console.error('Error collecting Hootsuite analytics:', error);
+      return this.getZeroAnalytics();
+    }
   }
 
   /**

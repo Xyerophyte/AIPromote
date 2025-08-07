@@ -9,7 +9,7 @@ import { z } from 'zod';
 
 // Request schemas
 const connectAccountSchema = z.object({
-  platform: z.enum(['TWITTER', 'LINKEDIN']),
+  platform: z.enum(['TWITTER', 'LINKEDIN', 'FACEBOOK', 'INSTAGRAM', 'TIKTOK', 'YOUTUBE_SHORTS', 'REDDIT', 'THREADS']),
   organizationId: z.string(),
 });
 
@@ -127,6 +127,18 @@ export async function socialMediaRoutes(fastify: FastifyInstance) {
         codeVerifier = authData.codeVerifier;
       } else if (platform === 'LINKEDIN') {
         authUrl = LinkedInService.generateAuthUrl(state);
+      } else if (platform === 'FACEBOOK') {
+        authUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(process.env.FACEBOOK_REDIRECT_URL!)}&state=${state}&scope=pages_manage_posts,pages_read_engagement,pages_manage_metadata`;
+      } else if (platform === 'INSTAGRAM') {
+        authUrl = `https://api.instagram.com/oauth/authorize?client_id=${process.env.INSTAGRAM_CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.INSTAGRAM_REDIRECT_URL!)}&scope=user_profile,user_media&response_type=code&state=${state}`;
+      } else if (platform === 'TIKTOK') {
+        authUrl = `https://www.tiktok.com/auth/authorize/?client_key=${process.env.TIKTOK_CLIENT_KEY}&scope=user.info.basic,video.list,video.upload&response_type=code&redirect_uri=${encodeURIComponent(process.env.TIKTOK_REDIRECT_URL!)}&state=${state}`;
+      } else if (platform === 'REDDIT') {
+        authUrl = `https://www.reddit.com/api/v1/authorize?client_id=${process.env.REDDIT_CLIENT_ID}&response_type=code&state=${state}&redirect_uri=${encodeURIComponent(process.env.REDDIT_REDIRECT_URL!)}&duration=permanent&scope=identity submit`;
+      } else if (platform === 'THREADS') {
+        authUrl = `https://threads.net/oauth/authorize?client_id=${process.env.THREADS_APP_ID}&redirect_uri=${encodeURIComponent(process.env.THREADS_REDIRECT_URL!)}&scope=threads_basic,threads_content_publish&response_type=code&state=${state}`;
+      } else if (platform === 'YOUTUBE_SHORTS') {
+        authUrl = `https://accounts.google.com/o/oauth2/auth?client_id=${process.env.YOUTUBE_CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.YOUTUBE_REDIRECT_URL!)}&scope=https://www.googleapis.com/auth/youtube.upload&response_type=code&access_type=offline&state=${state}`;
       } else {
         return reply.status(400).send({
           success: false,
@@ -274,6 +286,422 @@ export async function socialMediaRoutes(fastify: FastifyInstance) {
       reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?connected=linkedin&account=${socialAccount.id}`);
     } catch (error: any) {
       console.error('LinkedIn OAuth callback error:', error);
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?error=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  /**
+   * Facebook OAuth callback
+   */
+  fastify.get('/facebook/callback', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { code, state } = request.query as { code?: string; state?: string };
+
+      if (!code || !state) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Missing required parameters',
+        });
+      }
+
+      const oauthData = oauthStates.get(state);
+      if (!oauthData || oauthData.platform !== 'FACEBOOK') {
+        return reply.status(400).send({
+          success: false,
+          error: 'Invalid OAuth state',
+        });
+      }
+
+      // Exchange code for access token
+      const tokenResponse = await fetch('https://graph.facebook.com/v18.0/oauth/access_token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: process.env.FACEBOOK_APP_ID!,
+          client_secret: process.env.FACEBOOK_APP_SECRET!,
+          redirect_uri: process.env.FACEBOOK_REDIRECT_URL!,
+          code,
+        }),
+      });
+      const tokens = await tokenResponse.json();
+
+      // Get user profile and pages
+      const profileResponse = await fetch(`https://graph.facebook.com/v18.0/me?fields=id,name&access_token=${tokens.access_token}`);
+      const profile = await profileResponse.json();
+
+      // Save social account
+      const socialAccount = await prisma.socialAccount.create({
+        data: {
+          organizationId: oauthData.organizationId,
+          platform: Platform.FACEBOOK,
+          handle: profile.name || 'Facebook User',
+          displayName: profile.name || 'Facebook User',
+          profileUrl: `https://facebook.com/${profile.id}`,
+          accountId: profile.id,
+          accessTokenEncrypted: encrypt(tokens.access_token),
+          expiresAt: tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null,
+          isActive: true,
+          lastSyncAt: new Date(),
+        },
+      });
+
+      oauthStates.delete(state);
+
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?connected=facebook&account=${socialAccount.id}`);
+    } catch (error: any) {
+      console.error('Facebook OAuth callback error:', error);
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?error=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  /**
+   * Instagram OAuth callback
+   */
+  fastify.get('/instagram/callback', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { code, state } = request.query as { code?: string; state?: string };
+
+      if (!code || !state) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Missing required parameters',
+        });
+      }
+
+      const oauthData = oauthStates.get(state);
+      if (!oauthData || oauthData.platform !== 'INSTAGRAM') {
+        return reply.status(400).send({
+          success: false,
+          error: 'Invalid OAuth state',
+        });
+      }
+
+      // Exchange code for access token
+      const tokenResponse = await fetch('https://api.instagram.com/oauth/access_token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: process.env.INSTAGRAM_CLIENT_ID!,
+          client_secret: process.env.INSTAGRAM_CLIENT_SECRET!,
+          grant_type: 'authorization_code',
+          redirect_uri: process.env.INSTAGRAM_REDIRECT_URL!,
+          code,
+        }),
+      });
+      const tokens = await tokenResponse.json();
+
+      // Get user profile
+      const profileResponse = await fetch(`https://graph.instagram.com/me?fields=id,username&access_token=${tokens.access_token}`);
+      const profile = await profileResponse.json();
+
+      // Save social account
+      const socialAccount = await prisma.socialAccount.create({
+        data: {
+          organizationId: oauthData.organizationId,
+          platform: Platform.INSTAGRAM,
+          handle: profile.username || 'Instagram User',
+          displayName: profile.username || 'Instagram User',
+          profileUrl: `https://instagram.com/${profile.username}`,
+          accountId: profile.id,
+          accessTokenEncrypted: encrypt(tokens.access_token),
+          isActive: true,
+          lastSyncAt: new Date(),
+        },
+      });
+
+      oauthStates.delete(state);
+
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?connected=instagram&account=${socialAccount.id}`);
+    } catch (error: any) {
+      console.error('Instagram OAuth callback error:', error);
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?error=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  /**
+   * TikTok OAuth callback
+   */
+  fastify.get('/tiktok/callback', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { code, state } = request.query as { code?: string; state?: string };
+
+      if (!code || !state) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Missing required parameters',
+        });
+      }
+
+      const oauthData = oauthStates.get(state);
+      if (!oauthData || oauthData.platform !== 'TIKTOK') {
+        return reply.status(400).send({
+          success: false,
+          error: 'Invalid OAuth state',
+        });
+      }
+
+      // Exchange code for access token
+      const tokenResponse = await fetch('https://open-api.tiktok.com/oauth/access_token/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Cache-Control': 'no-cache'
+        },
+        body: new URLSearchParams({
+          client_key: process.env.TIKTOK_CLIENT_KEY!,
+          client_secret: process.env.TIKTOK_CLIENT_SECRET!,
+          code,
+          grant_type: 'authorization_code',
+          redirect_uri: process.env.TIKTOK_REDIRECT_URL!,
+        }),
+      });
+      const tokens = await tokenResponse.json();
+
+      // Get user info
+      const userResponse = await fetch('https://open-api.tiktok.com/user/info/', {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${tokens.data.access_token}`,
+        }
+      });
+      const userInfo = await userResponse.json();
+
+      // Save social account
+      const socialAccount = await prisma.socialAccount.create({
+        data: {
+          organizationId: oauthData.organizationId,
+          platform: Platform.TIKTOK,
+          handle: userInfo.data.user.username || 'TikTok User',
+          displayName: userInfo.data.user.display_name || 'TikTok User',
+          profileUrl: `https://tiktok.com/@${userInfo.data.user.username}`,
+          accountId: userInfo.data.user.open_id,
+          accessTokenEncrypted: encrypt(tokens.data.access_token),
+          refreshTokenEncrypted: tokens.data.refresh_token ? encrypt(tokens.data.refresh_token) : null,
+          expiresAt: new Date(Date.now() + tokens.data.expires_in * 1000),
+          isActive: true,
+          lastSyncAt: new Date(),
+        },
+      });
+
+      oauthStates.delete(state);
+
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?connected=tiktok&account=${socialAccount.id}`);
+    } catch (error: any) {
+      console.error('TikTok OAuth callback error:', error);
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?error=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  /**
+   * Reddit OAuth callback
+   */
+  fastify.get('/reddit/callback', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { code, state } = request.query as { code?: string; state?: string };
+
+      if (!code || !state) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Missing required parameters',
+        });
+      }
+
+      const oauthData = oauthStates.get(state);
+      if (!oauthData || oauthData.platform !== 'REDDIT') {
+        return reply.status(400).send({
+          success: false,
+          error: 'Invalid OAuth state',
+        });
+      }
+
+      // Exchange code for access token
+      const auth = Buffer.from(`${process.env.REDDIT_CLIENT_ID}:${process.env.REDDIT_CLIENT_SECRET}`).toString('base64');
+      const tokenResponse = await fetch('https://www.reddit.com/api/v1/access_token', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'AIPromote/1.0'
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: process.env.REDDIT_REDIRECT_URL!,
+        }),
+      });
+      const tokens = await tokenResponse.json();
+
+      // Get user profile
+      const profileResponse = await fetch('https://oauth.reddit.com/api/v1/me', {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${tokens.access_token}`,
+          'User-Agent': 'AIPromote/1.0'
+        }
+      });
+      const profile = await profileResponse.json();
+
+      // Save social account
+      const socialAccount = await prisma.socialAccount.create({
+        data: {
+          organizationId: oauthData.organizationId,
+          platform: Platform.REDDIT,
+          handle: profile.name || 'Reddit User',
+          displayName: profile.name || 'Reddit User',
+          profileUrl: `https://reddit.com/u/${profile.name}`,
+          accountId: profile.id,
+          accessTokenEncrypted: encrypt(tokens.access_token),
+          refreshTokenEncrypted: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
+          expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
+          isActive: true,
+          lastSyncAt: new Date(),
+        },
+      });
+
+      oauthStates.delete(state);
+
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?connected=reddit&account=${socialAccount.id}`);
+    } catch (error: any) {
+      console.error('Reddit OAuth callback error:', error);
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?error=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  /**
+   * Threads OAuth callback
+   */
+  fastify.get('/threads/callback', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { code, state } = request.query as { code?: string; state?: string };
+
+      if (!code || !state) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Missing required parameters',
+        });
+      }
+
+      const oauthData = oauthStates.get(state);
+      if (!oauthData || oauthData.platform !== 'THREADS') {
+        return reply.status(400).send({
+          success: false,
+          error: 'Invalid OAuth state',
+        });
+      }
+
+      // Exchange code for access token
+      const tokenResponse = await fetch('https://graph.threads.net/oauth/access_token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: process.env.THREADS_APP_ID!,
+          client_secret: process.env.THREADS_APP_SECRET!,
+          grant_type: 'authorization_code',
+          redirect_uri: process.env.THREADS_REDIRECT_URL!,
+          code,
+        }),
+      });
+      const tokens = await tokenResponse.json();
+
+      // Get user profile
+      const profileResponse = await fetch(`https://graph.threads.net/v1.0/me?fields=id,username,threads_profile_picture_url&access_token=${tokens.access_token}`);
+      const profile = await profileResponse.json();
+
+      // Save social account
+      const socialAccount = await prisma.socialAccount.create({
+        data: {
+          organizationId: oauthData.organizationId,
+          platform: Platform.THREADS,
+          handle: profile.username || 'Threads User',
+          displayName: profile.username || 'Threads User',
+          profileUrl: `https://threads.net/@${profile.username}`,
+          accountId: profile.id,
+          accessTokenEncrypted: encrypt(tokens.access_token),
+          isActive: true,
+          lastSyncAt: new Date(),
+        },
+      });
+
+      oauthStates.delete(state);
+
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?connected=threads&account=${socialAccount.id}`);
+    } catch (error: any) {
+      console.error('Threads OAuth callback error:', error);
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?error=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  /**
+   * YouTube OAuth callback
+   */
+  fastify.get('/youtube/callback', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { code, state } = request.query as { code?: string; state?: string };
+
+      if (!code || !state) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Missing required parameters',
+        });
+      }
+
+      const oauthData = oauthStates.get(state);
+      if (!oauthData || oauthData.platform !== 'YOUTUBE_SHORTS') {
+        return reply.status(400).send({
+          success: false,
+          error: 'Invalid OAuth state',
+        });
+      }
+
+      // Exchange code for access token
+      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: process.env.YOUTUBE_CLIENT_ID!,
+          client_secret: process.env.YOUTUBE_CLIENT_SECRET!,
+          code,
+          grant_type: 'authorization_code',
+          redirect_uri: process.env.YOUTUBE_REDIRECT_URL!,
+        }),
+      });
+      const tokens = await tokenResponse.json();
+
+      // Get channel info
+      const channelResponse = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true`, {
+        headers: {
+          'Authorization': `Bearer ${tokens.access_token}`,
+        }
+      });
+      const channelData = await channelResponse.json();
+      const channel = channelData.items?.[0];
+
+      if (!channel) {
+        throw new Error('No YouTube channel found');
+      }
+
+      // Save social account
+      const socialAccount = await prisma.socialAccount.create({
+        data: {
+          organizationId: oauthData.organizationId,
+          platform: Platform.YOUTUBE_SHORTS,
+          handle: channel.snippet.title || 'YouTube Channel',
+          displayName: channel.snippet.title || 'YouTube Channel',
+          profileUrl: `https://youtube.com/channel/${channel.id}`,
+          accountId: channel.id,
+          accessTokenEncrypted: encrypt(tokens.access_token),
+          refreshTokenEncrypted: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
+          expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
+          isActive: true,
+          lastSyncAt: new Date(),
+        },
+      });
+
+      oauthStates.delete(state);
+
+      reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?connected=youtube&account=${socialAccount.id}`);
+    } catch (error: any) {
+      console.error('YouTube OAuth callback error:', error);
       reply.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/social?error=${encodeURIComponent(error.message)}`);
     }
   });

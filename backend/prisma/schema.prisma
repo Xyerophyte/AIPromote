@@ -8,6 +8,8 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Connection pooling for serverless
+  directUrl = env("DIRECT_URL")
 }
 
 // ============================================
@@ -24,6 +26,8 @@ model User {
   plan             String         @default("free") // "free", "pro"
   role             UserRole       @default(USER)
   verified         Boolean        @default(false)
+  emailVerificationToken String?  @unique
+  emailVerificationExpiry DateTime?
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
 
@@ -49,6 +53,12 @@ model User {
 
   @@map("users")
   @@index([email])
+  @@index([emailVerificationToken])
+  @@index([verified])
+  @@index([role])
+  @@index([plan])
+  @@index([createdAt])
+  @@index([updatedAt])
 }
 
 // Account model for OAuth providers

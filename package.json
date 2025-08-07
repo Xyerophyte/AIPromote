@@ -2,20 +2,14 @@
   "name": "ai-promote",
   "private": true,
   "version": "1.0.0",
-  "description": "AI Promote - Monorepo with Next.js frontend and Fastify backend",
+  "description": "AI Promote - Next.js application with integrated API routes for Vercel deployment",
   "scripts": {
-    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
-    "dev:frontend": "npm run dev --workspace=frontend",
-    "dev:backend": "npm run dev --workspace=backend",
-    "build": "npm run build --workspace=frontend && npm run build --workspace=backend",
-    "build:frontend": "npm run build --workspace=frontend",
-    "build:backend": "npm run build --workspace=backend",
-    "start": "concurrently \"npm run start:frontend\" \"npm run start:backend\"",
-    "start:frontend": "npm run start --workspace=frontend",
-    "start:backend": "npm run start --workspace=backend",
-    "test": "npm run test --workspace=frontend && npm run test --workspace=backend",
-    "lint": "npm run lint --workspace=frontend && npm run lint --workspace=backend",
-    "type-check": "npm run type-check --workspace=frontend && npm run type-check --workspace=backend",
+    "dev": "npm run dev --workspace=frontend",
+    "build": "npm run build --workspace=frontend",
+    "start": "npm run start --workspace=frontend",
+    "test": "npm run test --workspace=frontend",
+    "lint": "npm run lint --workspace=frontend",
+    "type-check": "npm run type-check --workspace=frontend",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
     "docker:logs": "docker-compose logs -f",
@@ -27,26 +21,34 @@
   },
   "workspaces": [
     "frontend",
-    "backend",
     "shared",
     "mcp-server"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.1",
     "@modelcontextprotocol/server-filesystem": "^2025.7.29",
-    "zod": "^3.23.8",
+    "@types/node": "^20.0.0",
+    "clsx": "^2.1.1",
+    "dotenv": "^17.2.1",
+    "framer-motion": "^12.23.12",
+    "openai": "^5.12.0",
+    "pg": "^8.16.3",
+    "react-icons": "^5.5.0",
+    "redis": "^5.8.0",
+    "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.3.0",
-    "@types/node": "^20.0.0"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
   },
   "keywords": [
-    "monorepo",
     "nextjs",
-    "fastify",
+    "vercel",
+    "api-routes",
     "typescript",
-    "react"
+    "react",
+    "monorepo"
   ],
   "author": "",
   "license": "MIT"

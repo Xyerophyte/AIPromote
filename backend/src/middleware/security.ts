@@ -70,29 +70,7 @@ export const securityHeadersMiddleware = async (request: FastifyRequest, reply: 
 
 // Advanced CORS configuration
 export const corsConfig = {
-  origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
-    // Allow requests with no origin (mobile apps, etc.)
-    if (!origin) return callback(null, true);
-    
-    // Check against allowed origins
-    const allowedOrigins = config.corsOrigins;
-    const isAllowed = allowedOrigins.some(allowedOrigin => {
-      if (allowedOrigin === '*') return true;
-      if (allowedOrigin.includes('*')) {
-        // Handle wildcard subdomains
-        const pattern = allowedOrigin.replace(/\*/g, '.*');
-        const regex = new RegExp(`^${pattern}$`);
-        return regex.test(origin);
-      }
-      return allowedOrigin === origin;
-    });
-    
-    if (isAllowed) {
-      callback(null, true);
-    } else {
-      callback(new Error(`CORS: Origin ${origin} not allowed`), false);
-    }
-  },
+  origin: config.nodeEnv === 'development' ? true : config.corsOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: [

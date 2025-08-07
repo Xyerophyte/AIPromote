@@ -1,0 +1,350 @@
+name: 'Notify Deployment'
+description: 'Send deployment notifications via webhook and update deployment status'
+inputs:
+  status:
+    description: 'Deployment status (success, failure, in_progress)'
+    required: true
+  environment:
+    description: 'Environment (staging, production)'
+    required: true
+  type:
+    description: 'Type of deployment (deployment, migration, rollback)'
+    required: true
+    default: 'deployment'
+  deployment_url:
+    description: 'URL of the deployed application'
+    required: false
+  webhook_url:
+    description: 'Webhook URL for notifications'
+    required: false
+  rollback_reason:
+    description: 'Reason for rollback (if type is rollback)'
+    required: false
+  rollback_target:
+    description: 'Target commit for rollback (if type is rollback)'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Prepare notification data
+      shell: bash
+      run: |
+        # Create notification payload
+        cat << EOF > notification_payload.json
+        {
+          "status": "${{ inputs.status }}",
+          "environment": "${{ inputs.environment }}",
+          "type": "${{ inputs.type }}",
+          "deployment_url": "${{ inputs.deployment_url }}",
+          "commit_sha": "${{ github.sha }}",
+          "commit_message": "${{ github.event.head_commit.message }}",
+          "branch": "${{ github.ref_name }}",
+          "actor": "${{ github.actor }}",
+          "workflow_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "rollback_reason": "${{ inputs.rollback_reason }}",
+          "rollback_target": "${{ inputs.rollback_target }}"
+        }
+        EOF
+        
+        echo "Notification payload created"
+        cat notification_payload.json
+    
+    - name: Send webhook notification
+      if: inputs.webhook_url != ''
+      shell: bash
+      run: |
+        echo "📤 Sending webhook notification"
+        
+        curl -X POST "${{ inputs.webhook_url }}" \
+          -H "Content-Type: application/json" \
+          -H "User-Agent: GitHub-Actions/${{ github.run_id }}" \
+          -d @notification_payload.json \
+          --retry 3 \
+          --retry-delay 2 \
+          || echo "⚠️ Webhook notification failed, continuing..."
+    
+    - name: Send Slack notification
+      if: env.SLACK_WEBHOOK_URL != ''
+      shell: bash
+      env:
+        SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
+      run: |
+        echo "📱 Sending Slack notification"
+        
+        # Determine emoji and color based on status and type
+        if [[ "${{ inputs.status }}" == "success" ]]; then
+          EMOJI="✅"
+          COLOR="good"
+        elif [[ "${{ inputs.status }}" == "failure" ]]; then
+          EMOJI="❌"
+          COLOR="danger"
+        else
+          EMOJI="🔄"
+          COLOR="warning"
+        fi
+        
+        # Create Slack payload
+        cat << EOF > slack_payload.json
+        {
+          "username": "Deployment Bot",
+          "icon_emoji": ":rocket:",
+          "attachments": [
+            {
+              "color": "$COLOR",
+              "title": "$EMOJI ${{ inputs.type }} - ${{ inputs.environment }}",
+              "fields": [
+                {
+                  "title": "Status",
+                  "value": "${{ inputs.status }}",
+                  "short": true
+                },
+                {
+                  "title": "Branch",
+                  "value": "${{ github.ref_name }}",
+                  "short": true
+                },
+                {
+                  "title": "Commit",
+                  "value": "<${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}[0:7]>",
+                  "short": true
+                },
+                {
+                  "title": "Actor",
+                  "value": "${{ github.actor }}",
+                  "short": true
+                }
+              ],
+              "actions": [
+                {
+                  "type": "button",
+                  "text": "View Workflow",
+                  "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                }
+              ],
+              "footer": "GitHub Actions",
+              "ts": $(date +%s)
+            }
+          ]
+        }
+        EOF
+        
+        # Add deployment URL if available
+        if [[ -n "${{ inputs.deployment_url }}" ]]; then
+          jq '.attachments[0].actions += [{"type": "button", "text": "View Deployment", "url": "${{ inputs.deployment_url }}"}]' slack_payload.json > temp.json
+          mv temp.json slack_payload.json
+        fi
+        
+        curl -X POST "$SLACK_WEBHOOK_URL" \
+          -H "Content-Type: application/json" \
+          -d @slack_payload.json \
+          --retry 3 \
+          --retry-delay 2 \
+          || echo "⚠️ Slack notification failed, continuing..."
+    
+    - name: Send Discord notification
+      if: env.DISCORD_WEBHOOK_URL != ''
+      shell: bash
+      env:
+        DISCORD_WEBHOOK_URL: ${{ env.DISCORD_WEBHOOK_URL }}
+      run: |
+        echo "🎮 Sending Discord notification"
+        
+        # Determine color based on status
+        if [[ "${{ inputs.status }}" == "success" ]]; then
+          COLOR="3066993"  # Green
+        elif [[ "${{ inputs.status }}" == "failure" ]]; then
+          COLOR="15158332" # Red
+        else
+          COLOR="16776960" # Yellow
+        fi
+        
+        # Create Discord embed
+        cat << EOF > discord_payload.json
+        {
+          "username": "Deployment Bot",
+          "avatar_url": "https://github.com/github.png",
+          "embeds": [
+            {
+              "title": "${{ inputs.type }} - ${{ inputs.environment }}",
+              "description": "Status: **${{ inputs.status }}**",
+              "color": $COLOR,
+              "fields": [
+                {
+                  "name": "Branch",
+                  "value": "${{ github.ref_name }}",
+                  "inline": true
+                },
+                {
+                  "name": "Commit",
+                  "value": "[${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})",
+                  "inline": true
+                },
+                {
+                  "name": "Actor",
+                  "value": "${{ github.actor }}",
+                  "inline": true
+                }
+              ],
+              "footer": {
+                "text": "GitHub Actions",
+                "icon_url": "https://github.com/github.png"
+              },
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            }
+          ]
+        }
+        EOF
+        
+        curl -X POST "$DISCORD_WEBHOOK_URL" \
+          -H "Content-Type: application/json" \
+          -d @discord_payload.json \
+          --retry 3 \
+          --retry-delay 2 \
+          || echo "⚠️ Discord notification failed, continuing..."
+    
+    - name: Send Microsoft Teams notification
+      if: env.TEAMS_WEBHOOK_URL != ''
+      shell: bash
+      env:
+        TEAMS_WEBHOOK_URL: ${{ env.TEAMS_WEBHOOK_URL }}
+      run: |
+        echo "👥 Sending Microsoft Teams notification"
+        
+        # Determine theme color based on status
+        if [[ "${{ inputs.status }}" == "success" ]]; then
+          THEME_COLOR="00FF00"
+        elif [[ "${{ inputs.status }}" == "failure" ]]; then
+          THEME_COLOR="FF0000"
+        else
+          THEME_COLOR="FFFF00"
+        fi
+        
+        # Create Teams payload
+        cat << EOF > teams_payload.json
+        {
+          "@type": "MessageCard",
+          "@context": "https://schema.org/extensions",
+          "summary": "${{ inputs.type }} - ${{ inputs.environment }}",
+          "themeColor": "$THEME_COLOR",
+          "title": "${{ inputs.type }} - ${{ inputs.environment }}",
+          "sections": [
+            {
+              "activityTitle": "Status: ${{ inputs.status }}",
+              "activitySubtitle": "Branch: ${{ github.ref_name }}",
+              "facts": [
+                {
+                  "name": "Environment",
+                  "value": "${{ inputs.environment }}"
+                },
+                {
+                  "name": "Commit",
+                  "value": "${{ github.sha }}"
+                },
+                {
+                  "name": "Actor",
+                  "value": "${{ github.actor }}"
+                },
+                {
+                  "name": "Timestamp",
+                  "value": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                }
+              ]
+            }
+          ],
+          "potentialAction": [
+            {
+              "@type": "OpenUri",
+              "name": "View Workflow",
+              "targets": [
+                {
+                  "os": "default",
+                  "uri": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                }
+              ]
+            }
+          ]
+        }
+        EOF
+        
+        # Add deployment URL action if available
+        if [[ -n "${{ inputs.deployment_url }}" ]]; then
+          jq '.potentialAction += [{"@type": "OpenUri", "name": "View Deployment", "targets": [{"os": "default", "uri": "${{ inputs.deployment_url }}"}]}]' teams_payload.json > temp.json
+          mv temp.json teams_payload.json
+        fi
+        
+        curl -X POST "$TEAMS_WEBHOOK_URL" \
+          -H "Content-Type: application/json" \
+          -d @teams_payload.json \
+          --retry 3 \
+          --retry-delay 2 \
+          || echo "⚠️ Teams notification failed, continuing..."
+    
+    - name: Update deployment status badge
+      if: inputs.type == 'deployment'
+      shell: bash
+      run: |
+        echo "🏷️ Updating deployment status badge"
+        
+        # Create status badge data
+        if [[ "${{ inputs.status }}" == "success" ]]; then
+          STATUS_COLOR="brightgreen"
+          STATUS_MESSAGE="deployed"
+        elif [[ "${{ inputs.status }}" == "failure" ]]; then
+          STATUS_COLOR="red"
+          STATUS_MESSAGE="failed"
+        else
+          STATUS_COLOR="yellow"
+          STATUS_MESSAGE="deploying"
+        fi
+        
+        echo "DEPLOYMENT_BADGE_COLOR=$STATUS_COLOR" >> $GITHUB_ENV
+        echo "DEPLOYMENT_BADGE_MESSAGE=$STATUS_MESSAGE" >> $GITHUB_ENV
+        echo "DEPLOYMENT_BADGE_URL=https://img.shields.io/badge/${{ inputs.environment }}-$STATUS_MESSAGE-$STATUS_COLOR" >> $GITHUB_ENV
+    
+    - name: Log notification summary
+      shell: bash
+      run: |
+        echo "## 📬 Notification Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Type**: ${{ inputs.type }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Status**: ${{ inputs.status }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Timestamp**: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Add deployment-specific info
+        if [[ "${{ inputs.type }}" == "deployment" && -n "${{ inputs.deployment_url }}" ]]; then
+          echo "**Deployment URL**: ${{ inputs.deployment_url }}" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Add rollback-specific info
+        if [[ "${{ inputs.type }}" == "rollback" ]]; then
+          echo "**Rollback Reason**: ${{ inputs.rollback_reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Rollback Target**: ${{ inputs.rollback_target }}" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Notifications sent to configured channels:" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ -n "${{ inputs.webhook_url }}" ]]; then
+          echo "- ✅ Custom webhook" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ -n "$SLACK_WEBHOOK_URL" ]]; then
+          echo "- ✅ Slack" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ -n "$DISCORD_WEBHOOK_URL" ]]; then
+          echo "- ✅ Discord" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ -n "$TEAMS_WEBHOOK_URL" ]]; then
+          echo "- ✅ Microsoft Teams" >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: Clean up temporary files
+      shell: bash
+      run: |
+        rm -f notification_payload.json slack_payload.json discord_payload.json teams_payload.json

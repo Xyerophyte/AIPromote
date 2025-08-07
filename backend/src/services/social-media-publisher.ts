@@ -1,6 +1,9 @@
 import { PrismaClient, Platform, PostStatus } from '@prisma/client';
 import { TwitterService } from './twitter-api';
 import { LinkedInService } from './linkedin-api';
+import { FacebookService } from './facebook-api';
+import { BufferService } from './buffer-api';
+import { HootsuiteService } from './hootsuite-api';
 import { addPublishingJob, PublishingJob } from '../config/redis';
 import { encrypt, decrypt } from '../utils/encryption';
 
@@ -123,8 +126,16 @@ export class SocialMediaPublisher {
           case Platform.LINKEDIN:
             result = await this.publishToLinkedIn(scheduledPost);
             break;
+          case Platform.FACEBOOK:
+            result = await this.publishToFacebook(scheduledPost);
+            break;
+          case Platform.INSTAGRAM:
+            result = await this.publishToInstagram(scheduledPost);
+            break;
           default:
-            throw new Error(`Unsupported platform: ${scheduledPost.socialAccount.platform}`);
+            // Try Buffer or Hootsuite as fallback
+            result = await this.publishViaThirdParty(scheduledPost);
+            break;
         }
 
         // Update post status based on result
@@ -237,6 +248,193 @@ export class SocialMediaPublisher {
       };
     } catch (error: any) {
       console.error('Error publishing to LinkedIn:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Publish to Facebook
+   */
+  private async publishToFacebook(scheduledPost: any): Promise<PublishResult> {
+    try {
+      // Create Facebook service with decrypted credentials
+      const facebookService = await FacebookService.createWithEncryptedCredentials(
+        scheduledPost.socialAccount.accessTokenEncrypted,
+        scheduledPost.socialAccount.pageId,
+        scheduledPost.socialAccount.instagramAccountId,
+        scheduledPost.socialAccount.expiresAt
+      );
+
+      // Prepare post data
+      const postData = {
+        message: scheduledPost.contentPiece.body,
+        photoUrl: scheduledPost.contentPiece.mediaUrls?.[0], // Use first media URL if available
+        published: true,
+      };
+
+      // Post to Facebook
+      const result = await facebookService.postToFacebook(postData);
+
+      return {
+        success: true,
+        platformPostId: result.id,
+        platformUrl: `https://www.facebook.com/${scheduledPost.socialAccount.pageId}/posts/${result.postId}`,
+      };
+    } catch (error: any) {
+      console.error('Error publishing to Facebook:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Publish to Instagram
+   */
+  private async publishToInstagram(scheduledPost: any): Promise<PublishResult> {
+    try {
+      // Create Facebook service (handles Instagram too)
+      const facebookService = await FacebookService.createWithEncryptedCredentials(
+        scheduledPost.socialAccount.accessTokenEncrypted,
+        scheduledPost.socialAccount.pageId,
+        scheduledPost.socialAccount.instagramAccountId,
+        scheduledPost.socialAccount.expiresAt
+      );
+
+      // Prepare post data
+      const postData = {
+        imageUrl: scheduledPost.contentPiece.mediaUrls?.[0], // Instagram requires media
+        caption: scheduledPost.contentPiece.body,
+        mediaType: 'IMAGE' as const,
+      };
+
+      if (!postData.imageUrl) {
+        throw new Error('Instagram posts require at least one image');
+      }
+
+      // Post to Instagram
+      const result = await facebookService.postToInstagram(postData);
+
+      return {
+        success: true,
+        platformPostId: result.id,
+        platformUrl: `https://www.instagram.com/p/${result.id}/`,
+      };
+    } catch (error: any) {
+      console.error('Error publishing to Instagram:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Publish via third-party services (Buffer/Hootsuite)
+   */
+  private async publishViaThirdParty(scheduledPost: any): Promise<PublishResult> {
+    try {
+      // Try Buffer first
+      if (scheduledPost.socialAccount.thirdPartyService === 'BUFFER') {
+        return await this.publishViaBuffer(scheduledPost);
+      }
+      
+      // Try Hootsuite
+      if (scheduledPost.socialAccount.thirdPartyService === 'HOOTSUITE') {
+        return await this.publishViaHootsuite(scheduledPost);
+      }
+
+      throw new Error('No supported third-party service configured for this account');
+    } catch (error: any) {
+      console.error('Error publishing via third-party:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Publish via Buffer
+   */
+  private async publishViaBuffer(scheduledPost: any): Promise<PublishResult> {
+    try {
+      // Create Buffer service with decrypted credentials
+      const bufferService = await BufferService.createWithEncryptedCredentials(
+        scheduledPost.socialAccount.accessTokenEncrypted
+      );
+
+      // Prepare post data
+      const postData = {
+        text: scheduledPost.contentPiece.body,
+        profileIds: [scheduledPost.socialAccount.profileId || scheduledPost.socialAccount.accountId],
+        now: true, // Publish immediately
+        media: scheduledPost.contentPiece.mediaUrls?.[0] ? {
+          photo: scheduledPost.contentPiece.mediaUrls[0],
+        } : undefined,
+      };
+
+      // Post via Buffer
+      const result = await bufferService.createUpdate(postData);
+
+      if (!result.success || !result.updates || result.updates.length === 0) {
+        throw new Error('Buffer API did not return successful result');
+      }
+
+      const update = result.updates[0];
+      return {
+        success: true,
+        platformPostId: update.id,
+        platformUrl: update.serviceUpdateId ? `https://buffer.com/app/profile/${update.profileId}/buffer/${update.id}` : undefined,
+      };
+    } catch (error: any) {
+      console.error('Error publishing via Buffer:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Publish via Hootsuite
+   */
+  private async publishViaHootsuite(scheduledPost: any): Promise<PublishResult> {
+    try {
+      // Create Hootsuite service with decrypted credentials
+      const hootsuiteService = await HootsuiteService.createWithEncryptedCredentials(
+        scheduledPost.socialAccount.accessTokenEncrypted,
+        scheduledPost.socialAccount.refreshTokenEncrypted,
+        scheduledPost.socialAccount.expiresAt
+      );
+
+      // Prepare message data
+      const messageData = {
+        text: scheduledPost.contentPiece.body,
+        media: scheduledPost.contentPiece.mediaUrls?.map(url => ({
+          id: '', // Would need to upload media first
+          type: 'photo' as const,
+          url,
+        })),
+      };
+
+      // Send message immediately
+      const result = await hootsuiteService.sendMessageNow(
+        [scheduledPost.socialAccount.profileId || scheduledPost.socialAccount.accountId],
+        messageData
+      );
+
+      return {
+        success: true,
+        platformPostId: result.id,
+        platformUrl: `https://hootsuite.com/dashboard/messages/${result.id}`,
+      };
+    } catch (error: any) {
+      console.error('Error publishing via Hootsuite:', error);
       return {
         success: false,
         error: error.message,

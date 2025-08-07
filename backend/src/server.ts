@@ -1,39 +1,35 @@
-import fastify from 'fastify';
+import fastify, { FastifyError, FastifyRequest, FastifyReply, RateLimitError } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
+import multipart from '@fastify/multipart';
+import cookie from '@fastify/cookie';
 import { config } from './config/config';
 import { authRoutes } from './routes/auth';
+import { aiStrategyRoutes } from './routes/ai-strategy';
+import { contentRoutes } from './routes/content';
+import { socialMediaRoutes } from './routes/social-media';
+import { schedulingRoutes } from './routes/scheduling';
+import { analyticsRoutes } from './routes/analytics';
+import { billingRoutes } from './routes/billing';
+import { adminRoutes } from './routes/admin';
+import { uploadRoutes } from './routes/upload';
+import { testRoutes } from './routes/test';
 import prismaPlugin from './plugins/prisma';
-
-// Security and performance imports
-import { 
-  securityHeadersMiddleware,
-  corsConfig,
-  httpsEnforcementMiddleware,
-  createRequestSizeMiddleware,
-  createTimeoutMiddleware,
-  createContentTypeMiddleware,
-  requestSizeLimits,
-  ipFilter,
-  securityLogger 
-} from './middleware/security';
-import { 
-  rateLimitConfigs,
-  dynamicRateLimiter,
-  suspiciousActivityDetector 
-} from './middleware/rate-limiting';
-import { 
-  sanitizationMiddleware,
-  createValidationMiddleware,
-  CommonValidations 
-} from './middleware/validation';
-import { 
-  performanceMonitor,
-  queryOptimizer,
-  connectionPoolOptimizer 
-} from './services/performance-monitor';
 import { redis } from './config/redis';
+import { rateLimitConfigs, dynamicRateLimiter } from './middleware/rate-limiting';
+import { 
+  securityHeadersMiddleware, 
+  corsConfig,
+  createRequestSizeMiddleware,
+  requestSizeLimits 
+} from './middleware/security';
+import { sanitizationMiddleware } from './middleware/validation';
+import { isRateLimitError } from '../types/fastify';
+
+// Import additional types
+import '../types/fastify';
 
 // Helper function to check Redis health
 async function checkRedisHealth(): Promise<boolean> {
@@ -46,167 +42,302 @@ async function checkRedisHealth(): Promise<boolean> {
   }
 }
 
+// Authentication middleware
+async function authenticate(request: any, reply: any) {
+  try {
+    await request.jwtVerify();
+  } catch (err) {
+    reply.code(401).send({ error: 'Authentication required' });
+  }
+}
+
 const server = fastify({
   logger: config.nodeEnv === 'development' ? {
     level: config.logLevel,
-    transport: {
-      target: 'pino-pretty',
-      options: {
-        translateTime: 'HH:MM:ss Z',
-        ignore: 'pid,hostname'
-      }
-    }
+    // temporarily disabled pino-pretty to avoid transport issues
+    // transport: {
+    //   target: 'pino-pretty',
+    //   options: {
+    //     translateTime: 'HH:MM:ss Z',
+    //     ignore: 'pid,hostname'
+    //   }
+    // }
   } : {
     level: config.logLevel
   }
 });
 
 async function buildServer() {
+  // ===========================================
+  // CORE PLUGINS & MIDDLEWARE
+  // ===========================================
+  
   // Register database plugin
   await server.register(prismaPlugin);
   
-  // ============================================
-  // SECURITY MIDDLEWARE (Applied First)
-  // ============================================
-  
-  // HTTPS enforcement in production
-  server.addHook('onRequest', httpsEnforcementMiddleware);
-  
-  // Security headers
-  server.addHook('onRequest', securityHeadersMiddleware);
-  
-  // Request size limits
-  server.addHook('onRequest', createRequestSizeMiddleware(requestSizeLimits.default));
-  
-  // Request timeouts
-  server.addHook('onRequest', createTimeoutMiddleware(30000)); // 30 seconds
-  
-  // Content type validation
-  server.addHook('onRequest', createContentTypeMiddleware([
-    'application/json',
-    'application/x-www-form-urlencoded',
-    'multipart/form-data',
-    'text/plain'
-  ]));
-  
-  // IP filtering (if configured)
-  server.addHook('onRequest', ipFilter.createMiddleware());
-  
-  // Suspicious activity detection
-  server.addHook('onRequest', suspiciousActivityDetector.createMiddleware());
-  
-  // Performance monitoring
-  server.addHook('onRequest', performanceMonitor.createMiddleware());
-  
-  // Input sanitization
-  server.addHook('preHandler', sanitizationMiddleware);
-  
-  // ============================================
-  // FASTIFY PLUGINS
-  // ============================================
-  
-  // Enhanced CORS configuration
-  await server.register(cors, corsConfig);
-  
-  // Helmet with enhanced security headers (disabled since we have custom implementation)
-  await server.register(helmet, {
-    contentSecurityPolicy: false, // We handle this in securityHeadersMiddleware
-    crossOriginEmbedderPolicy: false,
-    crossOriginOpenerPolicy: false,
-    crossOriginResourcePolicy: false,
-    hsts: config.nodeEnv === 'production' ? {
-      maxAge: 31536000,
-      includeSubDomains: true,
-      preload: true
-    } : false,
+  // Register JWT authentication
+  await server.register(jwt, {
+    secret: config.jwt.secret,
+    sign: {
+      expiresIn: config.jwt.expiresIn,
+    },
   });
   
-  // Redis-based distributed rate limiting
-  server.addHook('preHandler', rateLimitConfigs.general.createMiddleware());
+  // Register cookie support
+  await server.register(cookie, {
+    secret: config.jwt.secret,
+    parseOptions: {},
+  });
   
-  // ============================================
-  // HEALTH AND MONITORING ENDPOINTS
-  // ============================================
+  // Register multipart support for file uploads
+  await server.register(multipart, {
+    limits: {
+      fieldNameSize: 100,
+      fieldSize: 100000,
+      fields: 10,
+      fileSize: requestSizeLimits.fileUpload,
+      files: 5,
+      headerPairs: 2000,
+    },
+  });
   
-  // Enhanced health check
-  server.get('/health', {
-    preHandler: [createRequestSizeMiddleware(1024)] // 1KB limit
-  }, async (request, reply) => {
-    const health = await performanceMonitor.getSystemHealth();
-    const redisHealth = await checkRedisHealth();
+  // Advanced CORS configuration
+  await server.register(cors, corsConfig);
+  
+  // Security headers
+  await server.register(helmet, {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+        imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
+        connectSrc: ["'self'", 'https://api.openai.com', 'https://api.anthropic.com'],
+        frameSrc: ["'self'", 'https://js.stripe.com'],
+      },
+    },
+    crossOriginEmbedderPolicy: false, // Disable for API usage
+  });
+  
+  // Rate limiting
+  await server.register(rateLimit, {
+    max: 100,
+    timeWindow: '15 minutes',
+    redis: redis,
+    nameSpace: 'rate_limit:',
+    continueExceeding: true,
+  });
+  
+  // ===========================================
+  // GLOBAL HOOKS & MIDDLEWARE
+  // ===========================================
+  
+  // Add authentication middleware decorator
+  server.decorate('authenticate', authenticate);
+  
+  // Security headers hook
+  server.addHook('onRequest', securityHeadersMiddleware);
+  
+  // Input sanitization hook
+  server.addHook('preHandler', sanitizationMiddleware);
+  
+  // Request size validation hook
+  server.addHook('onRequest', createRequestSizeMiddleware(requestSizeLimits.default));
+  
+  // Error handling
+  server.setErrorHandler(async (error: any, request, reply) => {
+    server.log.error(error);
     
-    const status = redisHealth ? 'healthy' : 'degraded';
-    const statusCode = status === 'healthy' ? 200 : 503;
+    // Rate limit errors
+    if (error.statusCode === 429) {
+      return reply.status(429).send({
+        error: 'Too Many Requests',
+        message: 'Rate limit exceeded. Please try again later.',
+        retryAfter: error.retryAfter || 900,
+      });
+    }
     
-    return reply.code(statusCode).send({
-      status,
-      timestamp: new Date().toISOString(),
-      version: '1.0.0',
-      environment: config.nodeEnv,
-      uptime: health.uptime,
-      memory: health.memory,
-      redis: redisHealth,
+    // Validation errors
+    if (error.validation) {
+      return reply.status(400).send({
+        error: 'Validation Error',
+        message: 'Request validation failed',
+        details: error.validation,
+      });
+    }
+    
+    // JWT errors
+    if (error.code === 'FST_JWT_NO_AUTHORIZATION_IN_COOKIE' || 
+        error.code === 'FST_JWT_AUTHORIZATION_TOKEN_EXPIRED' ||
+        error.code === 'FST_JWT_NO_AUTHORIZATION_IN_HEADER') {
+      return reply.status(401).send({
+        error: 'Authentication Error',
+        message: 'Invalid or expired token',
+      });
+    }
+    
+    // Generic error response
+    const statusCode = error.statusCode || 500;
+    return reply.status(statusCode).send({
+      error: statusCode >= 500 ? 'Internal Server Error' : error.name || 'Error',
+      message: statusCode >= 500 ? 'Something went wrong. Please try again later.' : error.message || 'An error occurred',
+      ...(config.nodeEnv === 'development' && { stack: error.stack }),
     });
   });
   
-  // Performance metrics endpoint (admin only)
-  server.get('/metrics', async (request, reply) => {
-    const format = (request.query as any)?.format || 'json';
-    const metrics = performanceMonitor.exportMetrics(format);
+  // ===========================================
+  // HEALTH & STATUS ENDPOINTS
+  // ===========================================
+  
+  // Health check endpoint
+  server.get('/health', async (request, reply) => {
+    const redisHealth = await checkRedisHealth();
     
-    if (format === 'prometheus') {
-      reply.type('text/plain');
-    }
-    
-    return metrics;
+    return reply.send({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      version: '1.0.0',
+      environment: config.nodeEnv,
+      services: {
+        database: 'connected',
+        redis: redisHealth ? 'connected' : 'disconnected',
+      },
+    });
   });
   
-  // Security events endpoint (admin only)
-  server.get('/security/events', async (request, reply) => {
-    const events = securityLogger.getRecentEvents(100);
-    return { events, total: events.length };
-  });
-
-  // Register auth routes
-  await server.register(authRoutes, { prefix: '/auth' });
-
-  // Register AI strategy routes
-  const { aiStrategyRoutes } = await import('./routes/ai-strategy');
-  await server.register(aiStrategyRoutes, { prefix: '/api/v1/ai-strategy' });
-
-  // Register content routes
-  const { contentRoutes } = await import('./routes/content');
-  await server.register(contentRoutes, { prefix: '/api/v1/content' });
-
-  // Register social media routes
-  const { socialMediaRoutes } = await import('./routes/social-media');
-  await server.register(socialMediaRoutes, { prefix: '/api/v1/social' });
-
-  // Register scheduling routes
-  const { schedulingRoutes } = await import('./routes/scheduling');
-  await server.register(schedulingRoutes, { prefix: '/api/v1/scheduling' });
-
-  // Register analytics routes
-  const { analyticsRoutes } = await import('./routes/analytics');
-  await server.register(analyticsRoutes, { prefix: '/api/v1/analytics' });
-
-  // Register billing routes
-  const { billingRoutes } = await import('./routes/billing');
-  await server.register(billingRoutes, { prefix: '/api/v1/billing' });
-
-  // Register admin routes
-  const { adminRoutes } = await import('./routes/admin');
-  await server.register(adminRoutes, { prefix: '/api/v1/admin' });
-
-  // API routes will be added here
+  // API info endpoint
   server.get('/api/v1', async (request, reply) => {
-    return { 
+    return reply.send({ 
       message: 'AI Promote API v1',
       version: '1.0.0',
-      environment: config.nodeEnv
-    };
+      environment: config.nodeEnv,
+      endpoints: {
+        auth: '/api/v1/auth',
+        aiStrategy: '/api/v1/ai-strategy',
+        content: '/api/v1/content',
+        social: '/api/v1/social',
+        scheduling: '/api/v1/scheduling',
+        analytics: '/api/v1/analytics',
+        billing: '/api/v1/billing',
+        admin: '/api/v1/admin',
+        upload: '/api/v1/upload',
+      }
+    });
   });
-
+  
+  // ===========================================
+  // ROUTE REGISTRATION
+  // ===========================================
+  
+  // Authentication routes (public)
+  await server.register(async (fastify) => {
+    // Add rate limiting middleware for auth routes
+    fastify.addHook('preHandler', rateLimitConfigs.auth.createMiddleware());
+    await fastify.register(authRoutes);
+  }, { 
+    prefix: '/api/v1/auth'
+  });
+  
+  // AI Strategy routes (protected)
+  await server.register(async (fastify) => {
+    // Add rate limiting and request size middleware for AI strategy routes
+    fastify.addHook('preHandler', rateLimitConfigs.contentGeneration.createMiddleware());
+    fastify.addHook('preHandler', createRequestSizeMiddleware(requestSizeLimits.contentGeneration));
+    await fastify.register(aiStrategyRoutes);
+  }, { 
+    prefix: '/api/v1/ai-strategy'
+  });
+  
+  // Content routes (protected)
+  await server.register(async (fastify) => {
+    // Add rate limiting and request size middleware for content routes
+    fastify.addHook('preHandler', rateLimitConfigs.contentGeneration.createMiddleware());
+    fastify.addHook('preHandler', createRequestSizeMiddleware(requestSizeLimits.contentGeneration));
+    await fastify.register(contentRoutes);
+  }, { 
+    prefix: '/api/v1/content'
+  });
+  
+  // Social Media routes (protected)
+  await server.register(async (fastify) => {
+    // Add rate limiting middleware for social media routes
+    fastify.addHook('preHandler', rateLimitConfigs.publishing.createMiddleware());
+    await fastify.register(socialMediaRoutes);
+  }, { 
+    prefix: '/api/v1/social'
+  });
+  
+  // Scheduling routes (protected)
+  await server.register(async (fastify) => {
+    // Add rate limiting middleware for scheduling routes
+    fastify.addHook('preHandler', rateLimitConfigs.general.createMiddleware());
+    await fastify.register(schedulingRoutes);
+  }, { 
+    prefix: '/api/v1/scheduling'
+  });
+  
+  // Analytics routes (protected)
+  await server.register(async (fastify) => {
+    // Add rate limiting middleware for analytics routes
+    fastify.addHook('preHandler', rateLimitConfigs.general.createMiddleware());
+    await fastify.register(analyticsRoutes);
+  }, { 
+    prefix: '/api/v1/analytics'
+  });
+  
+  // Billing routes (protected)
+  await server.register(async (fastify) => {
+    // Add rate limiting middleware for billing routes
+    fastify.addHook('preHandler', rateLimitConfigs.general.createMiddleware());
+    await fastify.register(billingRoutes);
+  }, { 
+    prefix: '/api/v1/billing'
+  });
+  
+  // Admin routes (protected, admin only)
+  await server.register(async (fastify) => {
+    // Add rate limiting middleware for admin routes
+    fastify.addHook('preHandler', rateLimitConfigs.admin.createMiddleware());
+    await fastify.register(adminRoutes);
+  }, { 
+    prefix: '/api/v1/admin'
+  });
+  
+  // Upload routes (protected)
+  await server.register(async (fastify) => {
+    // Add rate limiting and request size middleware for upload routes
+    fastify.addHook('preHandler', rateLimitConfigs.general.createMiddleware());
+    fastify.addHook('preHandler', createRequestSizeMiddleware(requestSizeLimits.fileUpload));
+    await fastify.register(uploadRoutes);
+  }, { 
+    prefix: '/api/v1'
+  });
+  
+  // Test routes (development only)
+  if (config.nodeEnv === 'development') {
+    await server.register(testRoutes, { 
+      prefix: '/api/v1',
+    });
+  }
+  
+  // ===========================================
+  // CATCH-ALL & ERROR ROUTES
+  // ===========================================
+  
+  // 404 handler
+  server.setNotFoundHandler(async (request, reply) => {
+    return reply.status(404).send({
+      error: 'Not Found',
+      message: `Route ${request.method} ${request.url} not found`,
+      availableEndpoints: {
+        health: 'GET /health',
+        api: 'GET /api/v1',
+        auth: 'POST /auth/register, POST /auth/signin',
+        docs: 'See API documentation for complete endpoint list',
+      },
+    });
+  });
+  
   return server;
 }
 

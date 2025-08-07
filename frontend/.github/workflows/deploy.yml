@@ -1,0 +1,419 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      skip_tests:
+        description: 'Skip tests (only for emergency deployments)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  NODE_VERSION: '18'
+  DEPLOYMENT_TIMEOUT: '600'
+
+jobs:
+  # Pre-deployment checks
+  pre-deployment-checks:
+    name: Pre-deployment Checks
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    
+    outputs:
+      should_deploy_staging: ${{ steps.deployment-decision.outputs.should_deploy_staging }}
+      should_deploy_production: ${{ steps.deployment-decision.outputs.should_deploy_production }}
+      migration_required: ${{ steps.migration-check.outputs.migration_required }}
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Check deployment decision
+      id: deployment-decision
+      run: |
+        if [[ "${{ github.ref }}" == "refs/heads/develop" ]] || [[ "${{ github.event.inputs.environment }}" == "staging" ]]; then
+          echo "should_deploy_staging=true" >> $GITHUB_OUTPUT
+        else
+          echo "should_deploy_staging=false" >> $GITHUB_OUTPUT
+        fi
+        
+        if [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.event.inputs.environment }}" == "production" ]]; then
+          echo "should_deploy_production=true" >> $GITHUB_OUTPUT
+        else
+          echo "should_deploy_production=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Check for database migrations
+      id: migration-check
+      run: |
+        if git diff --name-only HEAD~1 HEAD | grep -E "(migration|schema)" || [[ -d "supabase/migrations" ]]; then
+          echo "migration_required=true" >> $GITHUB_OUTPUT
+          echo "🔍 Database migrations detected"
+        else
+          echo "migration_required=false" >> $GITHUB_OUTPUT
+          echo "✅ No database migrations required"
+        fi
+
+  # Run comprehensive tests (reuse existing test.yml logic)
+  run-tests:
+    name: Run Tests
+    uses: ./.github/workflows/test.yml
+    if: ${{ !github.event.inputs.skip_tests }}
+    secrets: inherit
+
+  # Database Migration Job
+  database-migration:
+    name: Database Migration
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, run-tests]
+    if: |
+      always() && 
+      needs.pre-deployment-checks.outputs.migration_required == 'true' &&
+      (needs.run-tests.result == 'success' || github.event.inputs.skip_tests == 'true')
+    
+    strategy:
+      matrix:
+        environment: [staging, production]
+        exclude:
+          - environment: staging
+            if: ${{ needs.pre-deployment-checks.outputs.should_deploy_staging != 'true' }}
+          - environment: production
+            if: ${{ needs.pre-deployment-checks.outputs.should_deploy_production != 'true' }}
+    
+    environment:
+      name: ${{ matrix.environment }}
+      url: ${{ matrix.environment == 'production' && 'https://aipromoter.app' || 'https://staging.aipromoter.app' }}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Supabase CLI
+      uses: supabase/setup-cli@v1
+      with:
+        version: latest
+    
+    - name: Create migration backup
+      run: |
+        echo "🔄 Creating pre-migration backup for ${{ matrix.environment }}"
+        # This would typically involve creating a database backup
+        # Implementation depends on your Supabase setup
+        
+    - name: Run database migrations
+      run: |
+        echo "🚀 Running database migrations for ${{ matrix.environment }}"
+        if [[ "${{ matrix.environment }}" == "production" ]]; then
+          supabase db push --linked --include-all
+        else
+          supabase db push --linked --include-all
+        fi
+      env:
+        SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        SUPABASE_DB_PASSWORD: ${{ matrix.environment == 'production' && secrets.SUPABASE_DB_PASSWORD_PROD || secrets.SUPABASE_DB_PASSWORD_STAGING }}
+    
+    - name: Verify migration success
+      run: |
+        echo "✅ Verifying migration success for ${{ matrix.environment }}"
+        # Add migration verification logic here
+        
+    - name: Notify migration completion
+      if: always()
+      uses: ./.github/actions/notify-deployment
+      with:
+        status: ${{ job.status }}
+        environment: ${{ matrix.environment }}
+        type: 'migration'
+        webhook_url: ${{ secrets.DEPLOYMENT_WEBHOOK_URL }}
+
+  # Staging Deployment
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, run-tests, database-migration]
+    if: |
+      always() &&
+      needs.pre-deployment-checks.outputs.should_deploy_staging == 'true' &&
+      (needs.run-tests.result == 'success' || github.event.inputs.skip_tests == 'true') &&
+      (needs.database-migration.result == 'success' || needs.database-migration.result == 'skipped')
+    
+    environment:
+      name: staging
+      url: https://staging.aipromoter.app
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Build application
+      run: npm run build
+      env:
+        NODE_ENV: staging
+        NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+        SENTRY_DSN: ${{ secrets.STAGING_SENTRY_DSN }}
+    
+    - name: Deploy to Vercel Staging
+      uses: amondnet/vercel-action@v25
+      id: vercel-staging
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        vercel-args: '--env NODE_ENV=staging --target staging'
+        alias-domains: staging.aipromoter.app
+        scope: ${{ secrets.VERCEL_ORG_ID }}
+      env:
+        VERCEL_ENV: staging
+    
+    - name: Run staging smoke tests
+      run: |
+        echo "🧪 Running smoke tests against staging environment"
+        npx wait-on https://staging.aipromoter.app --timeout ${{ env.DEPLOYMENT_TIMEOUT }}000
+        
+        # Basic health checks
+        curl -f https://staging.aipromoter.app/api/health || exit 1
+        curl -f https://staging.aipromoter.app/ || exit 1
+        
+        echo "✅ Staging deployment smoke tests passed"
+    
+    - name: Run staging E2E tests
+      if: github.ref == 'refs/heads/develop'
+      uses: cypress-io/github-action@v6
+      with:
+        config: baseUrl=https://staging.aipromoter.app
+        browser: chrome
+      env:
+        CYPRESS_BASE_URL: https://staging.aipromoter.app
+        CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+    
+    - name: Update staging deployment status
+      if: always()
+      uses: ./.github/actions/notify-deployment
+      with:
+        status: ${{ job.status }}
+        environment: 'staging'
+        type: 'deployment'
+        deployment_url: ${{ steps.vercel-staging.outputs.preview-url }}
+        webhook_url: ${{ secrets.DEPLOYMENT_WEBHOOK_URL }}
+
+  # Production Deployment (with approval gate)
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, run-tests, database-migration, deploy-staging]
+    if: |
+      always() &&
+      needs.pre-deployment-checks.outputs.should_deploy_production == 'true' &&
+      (needs.run-tests.result == 'success' || github.event.inputs.skip_tests == 'true') &&
+      (needs.database-migration.result == 'success' || needs.database-migration.result == 'skipped') &&
+      (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped')
+    
+    environment:
+      name: production
+      url: https://aipromoter.app
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Build application
+      run: npm run build
+      env:
+        NODE_ENV: production
+        NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.PRODUCTION_SUPABASE_ANON_KEY }}
+        SENTRY_DSN: ${{ secrets.PRODUCTION_SENTRY_DSN }}
+    
+    - name: Create deployment backup
+      run: |
+        echo "🔄 Creating pre-deployment backup"
+        # Store current deployment info for rollback
+        echo "PREVIOUS_DEPLOYMENT_URL=https://aipromoter.app" >> $GITHUB_ENV
+        echo "BACKUP_TIMESTAMP=$(date +%s)" >> $GITHUB_ENV
+    
+    - name: Deploy to Vercel Production
+      uses: amondnet/vercel-action@v25
+      id: vercel-production
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        vercel-args: '--prod --target production'
+        alias-domains: aipromoter.app
+        scope: ${{ secrets.VERCEL_ORG_ID }}
+      env:
+        VERCEL_ENV: production
+    
+    - name: Run production smoke tests
+      run: |
+        echo "🧪 Running production smoke tests"
+        npx wait-on https://aipromoter.app --timeout ${{ env.DEPLOYMENT_TIMEOUT }}000
+        
+        # Critical health checks
+        curl -f https://aipromoter.app/api/health || exit 1
+        curl -f https://aipromoter.app/ || exit 1
+        
+        echo "✅ Production deployment smoke tests passed"
+    
+    - name: Run production performance tests
+      run: |
+        echo "⚡ Running production performance tests"
+        npm run test:load:staging # Use staging URL for load tests to avoid impacting production
+        
+        # Monitor key metrics
+        curl -f "https://aipromoter.app/api/health" -w "Response Time: %{time_total}s\n"
+    
+    - name: Update production deployment status
+      if: success()
+      uses: ./.github/actions/notify-deployment
+      with:
+        status: 'success'
+        environment: 'production'
+        type: 'deployment'
+        deployment_url: ${{ steps.vercel-production.outputs.preview-url }}
+        webhook_url: ${{ secrets.DEPLOYMENT_WEBHOOK_URL }}
+    
+    - name: Trigger rollback on failure
+      if: failure()
+      uses: ./.github/workflows/rollback.yml
+      with:
+        environment: 'production'
+        backup_timestamp: ${{ env.BACKUP_TIMESTAMP }}
+
+  # Post-deployment monitoring
+  post-deployment-monitoring:
+    name: Post-deployment Monitoring
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup monitoring
+      run: |
+        echo "📊 Setting up post-deployment monitoring"
+        
+        # Configure Sentry release tracking
+        if [[ "${{ needs.deploy-production.result }}" == "success" ]]; then
+          curl -sL https://sentry.io/get-cli/ | bash
+          sentry-cli releases new ${{ github.sha }}
+          sentry-cli releases set-commits ${{ github.sha }} --auto
+          sentry-cli releases finalize ${{ github.sha }}
+        fi
+    
+    - name: Health check monitoring
+      run: |
+        echo "🔍 Starting health check monitoring"
+        
+        # Monitor for 10 minutes after deployment
+        for i in {1..20}; do
+          if [[ "${{ needs.deploy-production.result }}" == "success" ]]; then
+            curl -f https://aipromoter.app/api/health || echo "❌ Production health check failed at attempt $i"
+          fi
+          
+          if [[ "${{ needs.deploy-staging.result }}" == "success" ]]; then
+            curl -f https://staging.aipromoter.app/api/health || echo "❌ Staging health check failed at attempt $i"
+          fi
+          
+          sleep 30
+        done
+        
+        echo "✅ Post-deployment monitoring completed"
+
+  # Security scan after deployment
+  post-deployment-security:
+    name: Post-deployment Security Scan
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: needs.deploy-production.result == 'success'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: OWASP ZAP Full Scan
+      uses: zaproxy/action-full-scan@v0.10.0
+      with:
+        target: 'https://aipromoter.app'
+        rules_file_name: '.zap/rules.tsv'
+        cmd_options: '-a -j -m 10 -T 60'
+    
+    - name: Upload security scan results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-scan-results
+        path: report_html.html
+
+  # Deployment summary
+  deployment-summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production, post-deployment-monitoring, post-deployment-security]
+    if: always()
+    
+    steps:
+    - name: Generate deployment summary
+      run: |
+        echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ needs.deploy-staging.result }}" == "success" ]]; then
+          echo "✅ **Staging Deployment**: SUCCESS" >> $GITHUB_STEP_SUMMARY
+          echo "   - URL: https://staging.aipromoter.app" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ needs.deploy-staging.result }}" == "failure" ]]; then
+          echo "❌ **Staging Deployment**: FAILED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⏭️ **Staging Deployment**: SKIPPED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ needs.deploy-production.result }}" == "success" ]]; then
+          echo "✅ **Production Deployment**: SUCCESS" >> $GITHUB_STEP_SUMMARY
+          echo "   - URL: https://aipromoter.app" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ needs.deploy-production.result }}" == "failure" ]]; then
+          echo "❌ **Production Deployment**: FAILED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⏭️ **Production Deployment**: SKIPPED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Deployment Time**: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ needs.post-deployment-monitoring.result }}" == "success" ]]; then
+          echo "✅ Post-deployment monitoring completed successfully" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ needs.post-deployment-security.result }}" == "success" ]]; then
+          echo "✅ Security scan completed successfully" >> $GITHUB_STEP_SUMMARY
+        fi

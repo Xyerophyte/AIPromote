@@ -1,6 +1,16 @@
-import { FastifyPluginAsync } from 'fastify'
-import { z } from 'zod'
-import { PrismaClient } from '@prisma/client'
+import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
+import { z } from 'zod';
+import { PrismaClient } from '@prisma/client';
+import type { 
+  AuthenticatedRequest,
+  StartupCreateRequest,
+  StartupUpdateRequest,
+  StartupDraftRequest,
+  StartupGetRequest,
+  StartupResponse,
+  StartupsListResponse,
+  DraftSaveResponse
+} from '../../types/routes';
 
 const prisma = new PrismaClient()
 

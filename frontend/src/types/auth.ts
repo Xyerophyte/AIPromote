@@ -1,4 +1,4 @@
-import { DefaultSession, DefaultUser } from "next-auth"
+import { DefaultSession } from "next-auth"
 import { DefaultJWT } from "next-auth/jwt"
 
 // Extend the built-in session types
@@ -11,8 +11,11 @@ declare module "next-auth" {
     } & DefaultSession["user"]
   }
 
-  interface User extends DefaultUser {
+  interface User {
     id: string
+    email?: string | null
+    name?: string | null
+    image?: string | null
     role: UserRole
     emailVerified: Date | null
   }
@@ -28,9 +31,9 @@ declare module "next-auth/jwt" {
 
 // User roles for RBAC
 export enum UserRole {
-  USER = "USER",
-  ADMIN = "ADMIN",
-  MODERATOR = "MODERATOR"
+  USER = "user",
+  ADMIN = "admin", 
+  MODERATOR = "moderator"
 }
 
 // Auth-related interfaces

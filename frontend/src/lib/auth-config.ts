@@ -4,12 +4,20 @@ import GitHubProvider from "next-auth/providers/github"
 import CredentialsProvider from "next-auth/providers/credentials"
 import bcrypt from "bcryptjs"
 import { UserRole, DbUser } from "@/types/auth"
+import { supabaseAdmin } from "@/lib/supabase"
 
 const authConfig: NextAuthConfig = {
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      authorization: {
+        params: {
+          prompt: "select_account",
+          access_type: "offline",
+          response_type: "code"
+        }
+      }
     }),
     GitHubProvider({
       clientId: process.env.GITHUB_CLIENT_ID!,
@@ -23,28 +31,31 @@ const authConfig: NextAuthConfig = {
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) {
-          throw new Error("Missing credentials")
+          return null
         }
 
         try {
-          // Call your backend API to verify credentials
-          const response = await fetch(`${process.env.BACKEND_API_URL}/auth/signin`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              email: credentials.email,
-              password: credentials.password,
-            }),
-          })
+          // Authenticate with Supabase
+          const { data: user, error } = await supabaseAdmin
+            .from('users')
+            .select('*')
+            .eq('email', credentials.email)
+            .single()
 
-          if (!response.ok) {
-            const error = await response.json()
-            throw new Error(error.message || "Invalid credentials")
+          if (error || !user) {
+            return null
           }
 
-          const user: DbUser = await response.json()
+          // Verify password (if stored in database)
+          // Note: In production, you might want to use Supabase Auth instead
+          const isValidPassword = await bcrypt.compare(
+            credentials.password as string,
+            user.password_hash || ''
+          )
+
+          if (!isValidPassword) {
+            return null
+          }
 
           return {
             id: user.id,
@@ -52,18 +63,17 @@ const authConfig: NextAuthConfig = {
             name: user.name,
             image: user.image,
             role: user.role,
-            emailVerified: user.emailVerified,
+            emailVerified: user.email_verified ? new Date(user.email_verified) : null,
           }
         } catch (error) {
-          console.error("Auth error:", error)
-          throw new Error("Authentication failed")
+          console.error('Authentication error:', error)
+          return null
         }
       }
     }),
   ],
   pages: {
     signIn: "/auth/signin",
-    signUp: "/auth/signup",
     error: "/auth/error",
   },
   callbacks: {
@@ -74,29 +84,70 @@ const authConfig: NextAuthConfig = {
         token.role = user.role
         token.emailVerified = user.emailVerified
 
-        // For OAuth providers, you might want to create/update user in your database
+        // For OAuth providers, create/update user in Supabase
         if (account.provider !== "credentials") {
           try {
-            const response = await fetch(`${process.env.BACKEND_API_URL}/auth/oauth`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                provider: account.provider,
-                providerId: account.providerAccountId,
-                email: user.email,
-                name: user.name,
-                image: user.image,
-              }),
-            })
+            // Check if user exists
+            const { data: existingUser } = await supabaseAdmin
+              .from('users')
+              .select('*')
+              .eq('email', user.email!)
+              .single()
 
-            if (response.ok) {
-              const dbUser: DbUser = await response.json()
-              token.id = dbUser.id
-              token.role = dbUser.role
-              token.emailVerified = dbUser.emailVerified
+            if (existingUser) {
+              // Update existing user
+              const { data: updatedUser } = await supabaseAdmin
+                .from('users')
+                .update({
+                  name: user.name,
+                  image: user.image,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', existingUser.id)
+                .select()
+                .single()
+
+              if (updatedUser) {
+                token.id = updatedUser.id
+                token.role = updatedUser.role
+                token.emailVerified = updatedUser.email_verified ? new Date(updatedUser.email_verified) : null
+              }
+            } else {
+              // Create new user
+              const { data: newUser } = await supabaseAdmin
+                .from('users')
+                .insert({
+                  email: user.email!,
+                  name: user.name,
+                  image: user.image,
+                  role: 'user' as UserRole,
+                  email_verified: new Date().toISOString(),
+                })
+                .select()
+                .single()
+
+              if (newUser) {
+                token.id = newUser.id
+                token.role = newUser.role
+                token.emailVerified = new Date(newUser.email_verified!)
+              }
             }
+
+            // Store OAuth account information
+            await supabaseAdmin
+              .from('accounts')
+              .upsert({
+                user_id: token.id as string,
+                type: account.type,
+                provider: account.provider,
+                provider_account_id: account.providerAccountId,
+                refresh_token: account.refresh_token,
+                access_token: account.access_token,
+                expires_at: account.expires_at,
+                token_type: account.token_type,
+                scope: account.scope,
+                id_token: account.id_token,
+              })
           } catch (error) {
             console.error("OAuth user creation/update error:", error)
           }
@@ -118,10 +169,7 @@ const authConfig: NextAuthConfig = {
     strategy: "jwt",
     maxAge: 30 * 24 * 60 * 60, // 30 days
   },
-  jwt: {
-    secret: process.env.JWT_SECRET,
-    maxAge: 30 * 24 * 60 * 60, // 30 days
-  },
+  secret: process.env.NEXTAUTH_SECRET,
   debug: process.env.NODE_ENV === "development",
 }
 
