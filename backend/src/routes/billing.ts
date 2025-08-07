@@ -1,6 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { stripeService } from '../services/stripe-service';
-import { prisma } from '../services/database';
 import { config } from '../config/config';
 import { UsageMetricType } from '@prisma/client';
 
@@ -34,7 +33,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
   // Get all subscription plans
   fastify.get('/plans', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const plans = await prisma.subscriptionPlan.findMany({
+      const plans = await fastify.prisma.subscriptionPlan.findMany({
         where: { isActive: true },
         orderBy: { sortOrder: 'asc' },
       });
@@ -53,7 +52,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
     try {
       const userId = (request.user as any).id;
 
-      const subscription = await prisma.subscription.findFirst({
+      const subscription = await fastify.prisma.subscription.findFirst({
         where: { userId },
         include: {
           plan: true,
@@ -105,7 +104,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       const { planId, paymentMethodId } = request.body;
 
       // Check if user already has an active subscription
-      const existingSubscription = await prisma.subscription.findFirst({
+      const existingSubscription = await fastify.prisma.subscription.findFirst({
         where: {
           userId,
           status: { in: ['ACTIVE', 'TRIALING'] },
@@ -139,7 +138,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       const userId = (request.user as any).id;
       const { planId, cancelAtPeriodEnd } = request.body;
 
-      const subscription = await prisma.subscription.findFirst({
+      const subscription = await fastify.prisma.subscription.findFirst({
         where: { userId },
       });
 
@@ -168,7 +167,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
     try {
       const userId = (request.user as any).id;
 
-      const subscription = await prisma.subscription.findFirst({
+      const subscription = await fastify.prisma.subscription.findFirst({
         where: { userId },
       });
 
@@ -219,7 +218,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
     try {
       const userId = (request.user as any).id;
 
-      const subscription = await prisma.subscription.findFirst({
+      const subscription = await fastify.prisma.subscription.findFirst({
         where: { userId },
       });
 
@@ -247,7 +246,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
     try {
       const userId = (request.user as any).id;
 
-      const paymentMethods = await prisma.paymentMethod.findMany({
+      const paymentMethods = await fastify.prisma.paymentMethod.findMany({
         where: {
           userId,
           isActive: true,
@@ -273,7 +272,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       const userId = (request.user as any).id;
       const { paymentMethodId } = request.body;
 
-      const subscription = await prisma.subscription.findFirst({
+      const subscription = await fastify.prisma.subscription.findFirst({
         where: { userId },
       });
 
@@ -302,7 +301,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       const userId = (request.user as any).id;
       const { paymentMethodId } = request.params;
 
-      const subscription = await prisma.subscription.findFirst({
+      const subscription = await fastify.prisma.subscription.findFirst({
         where: { userId },
       });
 
@@ -346,7 +345,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
     try {
       const userId = (request.user as any).id;
 
-      const subscription = await prisma.subscription.findFirst({
+      const subscription = await fastify.prisma.subscription.findFirst({
         where: { userId },
         include: {
           invoices: {
@@ -374,7 +373,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       currentMonth.setHours(0, 0, 0, 0);
 
       // Get current month usage
-      const usage = await prisma.usage.findUnique({
+      const usage = await fastify.prisma.usage.findUnique({
         where: {
           userId_month: {
             userId,
@@ -384,7 +383,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       });
 
       // Get usage records for detailed tracking
-      const usageRecords = await prisma.usageRecord.findMany({
+      const usageRecords = await fastify.prisma.usageRecord.findMany({
         where: {
           userId,
           periodStart: { gte: currentMonth },
@@ -393,7 +392,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       });
 
       // Get plan limits
-      const subscription = await prisma.subscription.findFirst({
+      const subscription = await fastify.prisma.subscription.findFirst({
         where: { userId },
         include: { plan: true },
       });
@@ -425,7 +424,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       const userId = (request.user as any).id;
       const { metricType, quantity } = request.body;
 
-      const subscription = await prisma.subscription.findFirst({
+      const subscription = await fastify.prisma.subscription.findFirst({
         where: { userId },
       });
 
@@ -462,7 +461,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
           break;
       }
 
-      await prisma.usage.upsert({
+      await fastify.prisma.usage.upsert({
         where: {
           userId_month: {
             userId,
@@ -519,7 +518,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       const userId = (request.user as any).id;
 
       // Get subscription with all related data
-      const subscription = await prisma.subscription.findFirst({
+      const subscription = await fastify.prisma.subscription.findFirst({
         where: { userId },
         include: {
           plan: true,
@@ -539,7 +538,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       currentMonth.setDate(1);
       currentMonth.setHours(0, 0, 0, 0);
 
-      const usage = await prisma.usage.findUnique({
+      const usage = await fastify.prisma.usage.findUnique({
         where: {
           userId_month: {
             userId,
@@ -553,7 +552,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
       sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
       sixMonthsAgo.setDate(1);
 
-      const usageTrend = await prisma.usage.findMany({
+      const usageTrend = await fastify.prisma.usage.findMany({
         where: {
           userId,
           month: { gte: sixMonthsAgo },

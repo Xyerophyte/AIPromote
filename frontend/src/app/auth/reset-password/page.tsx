@@ -1,12 +1,12 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 
-export default function ResetPassword() {
+function ResetPasswordForm() {
   const [formData, setFormData] = useState({
     password: "",
     confirmPassword: "",
@@ -20,7 +20,7 @@ export default function ResetPassword() {
   const searchParams = useSearchParams()
 
   useEffect(() => {
-    const tokenParam = searchParams.get("token")
+    const tokenParam = searchParams?.get("token")
     if (!tokenParam) {
       setError("Invalid or missing reset token")
       return
@@ -185,5 +185,19 @@ export default function ResetPassword() {
         </form>
       </div>
     </div>
+  )
+}
+
+export default function ResetPassword() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-md w-full text-center">
+          <h2 className="text-3xl font-extrabold text-gray-900">Loading...</h2>
+        </div>
+      </div>
+    }>
+      <ResetPasswordForm />
+    </Suspense>
   )
 }

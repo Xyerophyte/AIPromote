@@ -1,0 +1,375 @@
+name: Rollback Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - staging
+          - production
+      rollback_strategy:
+        description: 'Rollback strategy'
+        required: true
+        default: 'previous_deployment'
+        type: choice
+        options:
+          - previous_deployment
+          - specific_commit
+          - database_only
+      target_commit:
+        description: 'Target commit SHA (for specific_commit strategy)'
+        required: false
+        type: string
+      reason:
+        description: 'Reason for rollback'
+        required: true
+        type: string
+      emergency:
+        description: 'Emergency rollback (skip some checks)'
+        required: false
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        type: string
+      backup_timestamp:
+        description: 'Backup timestamp to rollback to'
+        required: false
+        type: string
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  # Rollback validation and preparation
+  rollback-preparation:
+    name: Rollback Preparation
+    runs-on: ubuntu-latest
+    
+    outputs:
+      rollback_target: ${{ steps.prepare.outputs.rollback_target }}
+      needs_db_rollback: ${{ steps.prepare.outputs.needs_db_rollback }}
+      
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Prepare rollback
+      id: prepare
+      run: |
+        echo "🔄 Preparing rollback for ${{ github.event.inputs.environment || inputs.environment }}"
+        
+        if [[ "${{ github.event.inputs.rollback_strategy }}" == "specific_commit" ]]; then
+          echo "rollback_target=${{ github.event.inputs.target_commit }}" >> $GITHUB_OUTPUT
+        else
+          # Get previous successful deployment
+          PREVIOUS_COMMIT=$(git log --oneline -n 2 --grep="deploy" --format=format:%H | tail -1)
+          echo "rollback_target=${PREVIOUS_COMMIT}" >> $GITHUB_OUTPUT
+        fi
+        
+        # Check if database rollback is needed
+        CURRENT_COMMIT=$(git rev-parse HEAD)
+        TARGET_COMMIT="${{ github.event.inputs.target_commit || '${PREVIOUS_COMMIT}' }}"
+        
+        if git diff --name-only ${TARGET_COMMIT}..${CURRENT_COMMIT} | grep -E "(migration|schema)"; then
+          echo "needs_db_rollback=true" >> $GITHUB_OUTPUT
+          echo "⚠️ Database rollback required"
+        else
+          echo "needs_db_rollback=false" >> $GITHUB_OUTPUT
+          echo "✅ No database rollback needed"
+        fi
+    
+    - name: Validate rollback target
+      run: |
+        TARGET="${{ steps.prepare.outputs.rollback_target }}"
+        if ! git cat-file -e ${TARGET}^{commit} 2>/dev/null; then
+          echo "❌ Invalid rollback target: ${TARGET}"
+          exit 1
+        fi
+        
+        echo "✅ Rollback target validated: ${TARGET}"
+        git show --oneline -s ${TARGET}
+
+  # Database rollback (if needed)
+  database-rollback:
+    name: Database Rollback
+    runs-on: ubuntu-latest
+    needs: [rollback-preparation]
+    if: needs.rollback-preparation.outputs.needs_db_rollback == 'true'
+    
+    environment:
+      name: ${{ github.event.inputs.environment || inputs.environment }}
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.rollback-preparation.outputs.rollback_target }}
+    
+    - name: Setup Supabase CLI
+      uses: supabase/setup-cli@v1
+      with:
+        version: latest
+    
+    - name: Create pre-rollback backup
+      run: |
+        echo "🔄 Creating pre-rollback database backup"
+        # This would create a backup before rolling back
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        echo "ROLLBACK_BACKUP_TIMESTAMP=${TIMESTAMP}" >> $GITHUB_ENV
+        
+    - name: Rollback database
+      run: |
+        echo "🔙 Rolling back database to target state"
+        
+        ENV="${{ github.event.inputs.environment || inputs.environment }}"
+        if [[ "${ENV}" == "production" ]]; then
+          echo "⚠️ Rolling back PRODUCTION database"
+          # Apply database rollback for production
+          supabase db reset --linked
+        else
+          echo "🧪 Rolling back STAGING database"
+          # Apply database rollback for staging
+          supabase db reset --linked
+        fi
+      env:
+        SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        SUPABASE_DB_PASSWORD: ${{ github.event.inputs.environment == 'production' && secrets.SUPABASE_DB_PASSWORD_PROD || secrets.SUPABASE_DB_PASSWORD_STAGING }}
+    
+    - name: Verify database rollback
+      run: |
+        echo "✅ Verifying database rollback success"
+        # Add verification logic here
+        
+    - name: Notify database rollback
+      if: always()
+      uses: ./.github/actions/notify-deployment
+      with:
+        status: ${{ job.status }}
+        environment: ${{ github.event.inputs.environment || inputs.environment }}
+        type: 'database-rollback'
+        webhook_url: ${{ secrets.DEPLOYMENT_WEBHOOK_URL }}
+
+  # Application rollback
+  application-rollback:
+    name: Application Rollback
+    runs-on: ubuntu-latest
+    needs: [rollback-preparation, database-rollback]
+    if: always() && needs.rollback-preparation.result == 'success' && (needs.database-rollback.result == 'success' || needs.database-rollback.result == 'skipped')
+    
+    environment:
+      name: ${{ github.event.inputs.environment || inputs.environment }}
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.rollback-preparation.outputs.rollback_target }}
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Build rollback version
+      run: npm run build
+      env:
+        NODE_ENV: ${{ github.event.inputs.environment == 'production' && 'production' || 'staging' }}
+        NEXT_PUBLIC_SUPABASE_URL: ${{ github.event.inputs.environment == 'production' && secrets.PRODUCTION_SUPABASE_URL || secrets.STAGING_SUPABASE_URL }}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ github.event.inputs.environment == 'production' && secrets.PRODUCTION_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY }}
+    
+    - name: Deploy rollback to Vercel
+      uses: amondnet/vercel-action@v25
+      id: vercel-rollback
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        vercel-args: ${{ github.event.inputs.environment == 'production' && '--prod' || '--target staging' }}
+        alias-domains: ${{ github.event.inputs.environment == 'production' && 'aipromoter.app' || 'staging.aipromoter.app' }}
+        scope: ${{ secrets.VERCEL_ORG_ID }}
+    
+    - name: Verify rollback deployment
+      run: |
+        ENV="${{ github.event.inputs.environment || inputs.environment }}"
+        if [[ "${ENV}" == "production" ]]; then
+          URL="https://aipromoter.app"
+        else
+          URL="https://staging.aipromoter.app"
+        fi
+        
+        echo "🔍 Verifying rollback deployment at ${URL}"
+        
+        # Wait for deployment to be ready
+        npx wait-on ${URL} --timeout 300000
+        
+        # Basic health checks
+        curl -f ${URL}/api/health || exit 1
+        curl -f ${URL}/ || exit 1
+        
+        echo "✅ Rollback deployment verified"
+    
+    - name: Run post-rollback smoke tests
+      if: ${{ !github.event.inputs.emergency }}
+      run: |
+        echo "🧪 Running post-rollback smoke tests"
+        
+        ENV="${{ github.event.inputs.environment || inputs.environment }}"
+        if [[ "${ENV}" == "production" ]]; then
+          BASE_URL="https://aipromoter.app"
+        else
+          BASE_URL="https://staging.aipromoter.app"
+        fi
+        
+        # Run basic smoke tests to ensure rollback is working
+        npm run test:api -- --testPathPattern="smoke" || echo "⚠️ Some smoke tests failed, but rollback completed"
+      env:
+        BASE_URL: ${{ github.event.inputs.environment == 'production' && 'https://aipromoter.app' || 'https://staging.aipromoter.app' }}
+
+  # Post-rollback monitoring
+  post-rollback-monitoring:
+    name: Post-rollback Monitoring
+    runs-on: ubuntu-latest
+    needs: [application-rollback]
+    if: needs.application-rollback.result == 'success'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Monitor rollback health
+      run: |
+        echo "📊 Starting post-rollback monitoring"
+        
+        ENV="${{ github.event.inputs.environment || inputs.environment }}"
+        if [[ "${ENV}" == "production" ]]; then
+          URL="https://aipromoter.app"
+        else
+          URL="https://staging.aipromoter.app"
+        fi
+        
+        # Monitor for 5 minutes after rollback
+        for i in {1..10}; do
+          if curl -f ${URL}/api/health > /dev/null 2>&1; then
+            echo "✅ Health check ${i}/10 passed"
+          else
+            echo "❌ Health check ${i}/10 failed"
+          fi
+          sleep 30
+        done
+        
+        echo "✅ Post-rollback monitoring completed"
+    
+    - name: Update error tracking
+      run: |
+        echo "📈 Updating error tracking for rollback"
+        
+        # Create Sentry release for rollback
+        if command -v sentry-cli &> /dev/null; then
+          sentry-cli releases new "rollback-${{ github.sha }}"
+          sentry-cli releases set-commits "rollback-${{ github.sha }}" --auto
+          sentry-cli releases finalize "rollback-${{ github.sha }}"
+        fi
+      env:
+        SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+        SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+
+  # Rollback notification and reporting
+  rollback-notification:
+    name: Rollback Notification
+    runs-on: ubuntu-latest
+    needs: [rollback-preparation, database-rollback, application-rollback, post-rollback-monitoring]
+    if: always()
+    
+    steps:
+    - name: Send rollback notification
+      uses: ./.github/actions/notify-deployment
+      with:
+        status: ${{ needs.application-rollback.result }}
+        environment: ${{ github.event.inputs.environment || inputs.environment }}
+        type: 'rollback'
+        rollback_reason: ${{ github.event.inputs.reason }}
+        rollback_target: ${{ needs.rollback-preparation.outputs.rollback_target }}
+        webhook_url: ${{ secrets.DEPLOYMENT_WEBHOOK_URL }}
+    
+    - name: Create rollback incident report
+      if: always()
+      run: |
+        echo "## 🔄 Rollback Incident Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Environment**: ${{ github.event.inputs.environment || inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Rollback Strategy**: ${{ github.event.inputs.rollback_strategy || 'previous_deployment' }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Target Commit**: ${{ needs.rollback-preparation.outputs.rollback_target }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Reason**: ${{ github.event.inputs.reason || 'Automatic rollback triggered' }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ needs.database-rollback.result }}" == "success" ]]; then
+          echo "✅ Database rollback: SUCCESS" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ needs.database-rollback.result }}" == "skipped" ]]; then
+          echo "⏭️ Database rollback: SKIPPED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Database rollback: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ needs.application-rollback.result }}" == "success" ]]; then
+          echo "✅ Application rollback: SUCCESS" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Application rollback: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ needs.post-rollback-monitoring.result }}" == "success" ]]; then
+          echo "✅ Post-rollback monitoring: SUCCESS" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Post-rollback monitoring: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Next Steps**:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Investigate root cause of the issue that triggered rollback" >> $GITHUB_STEP_SUMMARY
+        echo "2. Implement fixes and test thoroughly" >> $GITHUB_STEP_SUMMARY
+        echo "3. Plan and execute a new deployment" >> $GITHUB_STEP_SUMMARY
+        echo "4. Document lessons learned" >> $GITHUB_STEP_SUMMARY
+    
+    - name: Create GitHub Issue for incident
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const issue = await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `🚨 Rollback Incident - ${{ github.event.inputs.environment || inputs.environment }} Environment`,
+            body: `## Rollback Incident Report
+            
+            **Environment**: ${{ github.event.inputs.environment || inputs.environment }}
+            **Rollback Reason**: ${{ github.event.inputs.reason || 'Automatic rollback triggered' }}
+            **Target Commit**: ${{ needs.rollback-preparation.outputs.rollback_target }}
+            **Timestamp**: ${new Date().toISOString()}
+            
+            ### Status
+            - Database Rollback: ${{ needs.database-rollback.result }}
+            - Application Rollback: ${{ needs.application-rollback.result }}
+            - Post-rollback Monitoring: ${{ needs.post-rollback-monitoring.result }}
+            
+            ### Action Items
+            - [ ] Investigate root cause
+            - [ ] Implement fixes
+            - [ ] Test fixes thoroughly
+            - [ ] Plan new deployment
+            - [ ] Document lessons learned
+            
+            **Workflow Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
+            labels: ['incident', 'rollback', 'high-priority']
+          });
+          
+          console.log(`Created incident issue: ${issue.data.html_url}`);

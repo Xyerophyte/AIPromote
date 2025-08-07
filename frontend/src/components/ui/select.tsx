@@ -9,21 +9,36 @@ const SelectGroup = SelectPrimitive.Group
 
 const SelectValue = SelectPrimitive.Value
 
+interface SelectTriggerProps extends React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger> {
+  error?: boolean
+  success?: boolean
+}
+
 const SelectTrigger = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Trigger>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger>
->(({ className, children, ...props }, ref) => (
+  SelectTriggerProps
+>(({ className, children, error, success, ...props }, ref) => (
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-10 w-full items-center justify-between rounded-md border border-gray-300 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+      "flex h-10 w-full items-center justify-between rounded-md border bg-white px-3 py-2 text-sm transition-all duration-200 ease-out",
+      "placeholder:text-gray-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50",
+      // Base state
+      "border-gray-300 text-gray-900",
+      // Focus and hover states with glow effect
+      "hover:border-gray-400 focus:border-blue-500 focus:shadow-glow focus:[--glow-color:rgba(59,130,246,0.15)]",
+      "data-[state=open]:border-blue-500 data-[state=open]:shadow-glow data-[state=open]:[--glow-color:rgba(59,130,246,0.15)]",
+      // Error state
+      error && "border-red-500 focus:border-red-500 focus:shadow-glow focus:[--glow-color:rgba(239,68,68,0.15)]",
+      // Success state
+      success && "border-green-500 focus:border-green-500 focus:shadow-glow focus:[--glow-color:rgba(34,197,94,0.15)]",
       className
     )}
     {...props}
   >
-    {children}
+    <span className="truncate">{children}</span>
     <SelectPrimitive.Icon asChild>
-      <ChevronDown className="h-4 w-4 opacity-50" />
+      <ChevronDown className="h-4 w-4 opacity-50 transition-transform duration-200 data-[state=open]:rotate-180" />
     </SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>
 ))

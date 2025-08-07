@@ -1,0 +1,19 @@
+{
+  "timestamp": "2025-08-07T08:44:33.431Z",
+  "overallStatus": "FAIL",
+  "results": {
+    "apiKeyValid": true,
+    "connectionSuccess": true,
+    "contentGeneration": false,
+    "rateLimitHandling": false,
+    "errorHandling": true,
+    "responseTime": 647,
+    "apiUsage": null,
+    "errors": [
+      "Content generation failed: 401 No auth credentials found"
+    ],
+    "warnings": [
+      "Some concurrent requests failed - may indicate rate limiting"
+    ]
+  }
+}

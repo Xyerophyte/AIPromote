@@ -1,0 +1,97 @@
+{
+  "bundles": {
+    "main": {
+      "maxSize": 250000,
+      "description": "Main application bundle size limit (250KB)"
+    },
+    "vendor": {
+      "maxSize": 500000,
+      "description": "Third-party dependencies bundle size limit (500KB)"
+    },
+    "total": {
+      "maxSize": 2000000,
+      "description": "Total bundle size limit (2MB)"
+    }
+  },
+  "lighthouse": {
+    "performance": {
+      "minScore": 80,
+      "description": "Minimum Lighthouse performance score"
+    },
+    "accessibility": {
+      "minScore": 90,
+      "description": "Minimum Lighthouse accessibility score"
+    },
+    "best-practices": {
+      "minScore": 85,
+      "description": "Minimum Lighthouse best practices score"
+    },
+    "seo": {
+      "minScore": 85,
+      "description": "Minimum Lighthouse SEO score"
+    },
+    "metrics": {
+      "first-contentful-paint": {
+        "maxValue": 2000,
+        "unit": "ms",
+        "description": "Maximum First Contentful Paint time"
+      },
+      "largest-contentful-paint": {
+        "maxValue": 4000,
+        "unit": "ms",
+        "description": "Maximum Largest Contentful Paint time"
+      },
+      "cumulative-layout-shift": {
+        "maxValue": 0.1,
+        "unit": "score",
+        "description": "Maximum Cumulative Layout Shift score"
+      },
+      "total-blocking-time": {
+        "maxValue": 300,
+        "unit": "ms",
+        "description": "Maximum Total Blocking Time"
+      }
+    }
+  },
+  "loadTesting": {
+    "responseTime": {
+      "average": {
+        "maxValue": 2000,
+        "unit": "ms",
+        "description": "Maximum average response time"
+      },
+      "p95": {
+        "maxValue": 5000,
+        "unit": "ms",
+        "description": "Maximum 95th percentile response time"
+      }
+    },
+    "errorRate": {
+      "maxValue": 0.05,
+      "unit": "percentage",
+      "description": "Maximum error rate (5%)"
+    },
+    "throughput": {
+      "minValue": 100,
+      "unit": "requests/second",
+      "description": "Minimum requests per second"
+    }
+  },
+  "api": {
+    "healthCheck": {
+      "maxResponseTime": 500,
+      "unit": "ms",
+      "description": "Maximum health check response time"
+    },
+    "authentication": {
+      "maxResponseTime": 1000,
+      "unit": "ms",
+      "description": "Maximum authentication endpoint response time"
+    },
+    "dataQuery": {
+      "maxResponseTime": 3000,
+      "unit": "ms",
+      "description": "Maximum data query response time"
+    }
+  }
+}

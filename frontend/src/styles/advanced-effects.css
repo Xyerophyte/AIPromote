@@ -1,0 +1,243 @@
+/* Advanced Animation Effects CSS */
+
+/* 3D Transform utilities */
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+}
+
+.perspective-1000 {
+  perspective: 1000px;
+}
+
+.perspective-2000 {
+  perspective: 2000px;
+}
+
+/* Magnetic Button Effects */
+.magnetic-button {
+  transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  will-change: transform;
+}
+
+.magnetic-button:hover {
+  transform: scale(1.05);
+  box-shadow: 0 10px 30px rgba(59, 130, 246, 0.2);
+}
+
+/* Text Scramble Effects */
+.text-scramble {
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.05em;
+}
+
+/* Liquid Loading Animations */
+@keyframes liquid-wave {
+  0% {
+    border-radius: 50% 50% 50% 50%;
+  }
+  25% {
+    border-radius: 60% 40% 60% 40%;
+  }
+  50% {
+    border-radius: 50% 60% 40% 50%;
+  }
+  75% {
+    border-radius: 40% 50% 60% 50%;
+  }
+  100% {
+    border-radius: 50% 50% 50% 50%;
+  }
+}
+
+.liquid-loading {
+  animation: liquid-wave 3s ease-in-out infinite;
+}
+
+/* Card Stack 3D Effects */
+.card-stack-3d {
+  transform-style: preserve-3d;
+  perspective: 1000px;
+}
+
+.card-stack-item {
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  transform-style: preserve-3d;
+}
+
+.card-stack-item:hover {
+  transform: translateZ(20px) rotateX(5deg);
+}
+
+/* Floating Action Button */
+.floating-action-button {
+  position: fixed;
+  z-index: 1000;
+  will-change: transform;
+  animation: floating 3s ease-in-out infinite;
+}
+
+@keyframes floating {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+/* Morphing Icon Effects */
+.morphing-icon {
+  position: relative;
+  overflow: hidden;
+}
+
+.morphing-icon-enter {
+  animation: morphing-icon-enter 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.morphing-icon-exit {
+  animation: morphing-icon-exit 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+@keyframes morphing-icon-enter {
+  from {
+    transform: scale(0) rotate(-180deg);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+@keyframes morphing-icon-exit {
+  from {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+  to {
+    transform: scale(0) rotate(180deg);
+    opacity: 0;
+  }
+}
+
+/* Glass Morphism Effects */
+.glass-effect {
+  backdrop-filter: blur(12px) saturate(200%);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.glass-effect-strong {
+  backdrop-filter: blur(20px) saturate(250%);
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+/* Performance optimizations */
+.will-change-transform {
+  will-change: transform;
+}
+
+.will-change-opacity {
+  will-change: opacity;
+}
+
+.will-change-contents {
+  will-change: contents;
+}
+
+.gpu-accelerated {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Reduced Motion Support */
+@media (prefers-reduced-motion: reduce) {
+  .magnetic-button {
+    transition: none;
+  }
+  
+  .liquid-loading {
+    animation: none;
+  }
+  
+  .floating-action-button {
+    animation: none;
+  }
+  
+  .morphing-icon-enter,
+  .morphing-icon-exit {
+    animation: none;
+  }
+  
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Shimmer Effect for Loading States */
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 1000px 100%;
+  animation: shimmer 2s infinite;
+}
+
+/* Glow Pulse Animation */
+@keyframes glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(59, 130, 246, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.6), 0 0 30px rgba(59, 130, 246, 0.4);
+  }
+}
+
+.glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+/* Interactive Hover Lift */
+.hover-lift {
+  transition: all 0.3s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+}
+
+/* Gradient Animation */
+@keyframes gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.animated-gradient {
+  background-size: 200% 200%;
+  animation: gradient-shift 6s ease infinite;
+}

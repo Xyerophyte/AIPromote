@@ -1,0 +1,590 @@
+name: Performance Regression Testing
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main ]
+  schedule:
+    # Run performance tests daily at 1 AM UTC
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of performance test to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - lighthouse
+          - load
+          - bundle
+          - api
+      target_environment:
+        description: 'Environment to test against'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+          - local
+
+env:
+  NODE_VERSION: '18'
+  PERFORMANCE_BUDGET_FILE: '.performance-budget.json'
+
+jobs:
+  # Setup and build
+  setup:
+    name: Setup Performance Testing
+    runs-on: ubuntu-latest
+    outputs:
+      base_url: ${{ steps.determine-url.outputs.base_url }}
+      should_run_lighthouse: ${{ steps.determine-tests.outputs.should_run_lighthouse }}
+      should_run_load: ${{ steps.determine-tests.outputs.should_run_load }}
+      should_run_bundle: ${{ steps.determine-tests.outputs.should_run_bundle }}
+      should_run_api: ${{ steps.determine-tests.outputs.should_run_api }}
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Determine base URL
+      id: determine-url
+      run: |
+        if [[ "${{ github.event.inputs.target_environment }}" == "production" ]]; then
+          echo "base_url=https://aipromoter.app" >> $GITHUB_OUTPUT
+        elif [[ "${{ github.event.inputs.target_environment }}" == "staging" ]]; then
+          echo "base_url=https://staging.aipromoter.app" >> $GITHUB_OUTPUT
+        else
+          echo "base_url=http://localhost:3000" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Determine which tests to run
+      id: determine-tests
+      run: |
+        TEST_TYPE="${{ github.event.inputs.test_type || 'all' }}"
+        
+        if [[ "$TEST_TYPE" == "all" || "$TEST_TYPE" == "lighthouse" ]]; then
+          echo "should_run_lighthouse=true" >> $GITHUB_OUTPUT
+        else
+          echo "should_run_lighthouse=false" >> $GITHUB_OUTPUT
+        fi
+        
+        if [[ "$TEST_TYPE" == "all" || "$TEST_TYPE" == "load" ]]; then
+          echo "should_run_load=true" >> $GITHUB_OUTPUT
+        else
+          echo "should_run_load=false" >> $GITHUB_OUTPUT
+        fi
+        
+        if [[ "$TEST_TYPE" == "all" || "$TEST_TYPE" == "bundle" ]]; then
+          echo "should_run_bundle=true" >> $GITHUB_OUTPUT
+        else
+          echo "should_run_bundle=false" >> $GITHUB_OUTPUT
+        fi
+        
+        if [[ "$TEST_TYPE" == "all" || "$TEST_TYPE" == "api" ]]; then
+          echo "should_run_api=true" >> $GITHUB_OUTPUT
+        else
+          echo "should_run_api=false" >> $GITHUB_OUTPUT
+        fi
+
+  # Bundle size analysis
+  bundle-analysis:
+    name: Bundle Size Analysis
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.should_run_bundle == 'true'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Build application
+      run: npm run build
+      env:
+        NODE_ENV: production
+        ANALYZE: true
+    
+    - name: Analyze bundle size
+      run: |
+        echo "📦 Analyzing bundle size"
+        npm run perf:build-size
+        
+        # Generate bundle report
+        npx @next/bundle-analyzer .next > bundle-analysis.txt
+    
+    - name: Bundle size regression check
+      run: |
+        echo "🔍 Checking for bundle size regression"
+        
+        # Get current bundle sizes
+        CURRENT_MAIN_SIZE=$(du -b .next/static/chunks/pages/_app-*.js | cut -f1)
+        CURRENT_TOTAL_SIZE=$(du -sb .next/static | cut -f1)
+        
+        echo "Current main bundle size: $CURRENT_MAIN_SIZE bytes"
+        echo "Current total size: $CURRENT_TOTAL_SIZE bytes"
+        
+        # Compare with performance budget if available
+        if [[ -f "$PERFORMANCE_BUDGET_FILE" ]]; then
+          MAX_MAIN_SIZE=$(jq -r '.bundles.main.maxSize // 250000' $PERFORMANCE_BUDGET_FILE)
+          MAX_TOTAL_SIZE=$(jq -r '.bundles.total.maxSize // 2000000' $PERFORMANCE_BUDGET_FILE)
+          
+          if [[ $CURRENT_MAIN_SIZE -gt $MAX_MAIN_SIZE ]]; then
+            echo "❌ Main bundle size ($CURRENT_MAIN_SIZE) exceeds budget ($MAX_MAIN_SIZE)"
+            echo "BUNDLE_REGRESSION=true" >> $GITHUB_ENV
+          fi
+          
+          if [[ $CURRENT_TOTAL_SIZE -gt $MAX_TOTAL_SIZE ]]; then
+            echo "❌ Total bundle size ($CURRENT_TOTAL_SIZE) exceeds budget ($MAX_TOTAL_SIZE)"
+            echo "BUNDLE_REGRESSION=true" >> $GITHUB_ENV
+          fi
+        fi
+        
+        echo "CURRENT_MAIN_SIZE=$CURRENT_MAIN_SIZE" >> $GITHUB_ENV
+        echo "CURRENT_TOTAL_SIZE=$CURRENT_TOTAL_SIZE" >> $GITHUB_ENV
+    
+    - name: Bundle size report
+      run: |
+        echo "## 📦 Bundle Size Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Main Bundle**: $(echo "scale=2; $CURRENT_MAIN_SIZE / 1024" | bc) KB" >> $GITHUB_STEP_SUMMARY
+        echo "**Total Size**: $(echo "scale=2; $CURRENT_TOTAL_SIZE / 1024 / 1024" | bc) MB" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "$BUNDLE_REGRESSION" == "true" ]]; then
+          echo "❌ **Bundle size regression detected!**" >> $GITHUB_STEP_SUMMARY
+          echo "Consider optimizing bundle size before merging." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ Bundle size within acceptable limits" >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: Upload bundle analysis
+      uses: actions/upload-artifact@v3
+      with:
+        name: bundle-analysis
+        path: |
+          bundle-analysis.txt
+          .next/analyze/
+    
+    - name: Comment PR with bundle analysis
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const bundleRegression = process.env.BUNDLE_REGRESSION === 'true';
+          
+          const comment = `## 📦 Bundle Size Analysis
+          
+          **Main Bundle**: ${Math.round(process.env.CURRENT_MAIN_SIZE / 1024)} KB
+          **Total Size**: ${Math.round(process.env.CURRENT_TOTAL_SIZE / 1024 / 1024 * 100) / 100} MB
+          
+          ${bundleRegression ? '❌ **Bundle size regression detected!**\n\nConsider optimizing bundle size before merging.' : '✅ Bundle size within acceptable limits'}
+          
+          [View detailed analysis](${context.payload.pull_request.html_url}/checks)`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+
+  # Lighthouse performance audit
+  lighthouse-audit:
+    name: Lighthouse Performance Audit
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.should_run_lighthouse == 'true'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies and build
+      if: needs.setup.outputs.base_url == 'http://localhost:3000'
+      run: |
+        npm ci
+        npm run build
+    
+    - name: Start local server
+      if: needs.setup.outputs.base_url == 'http://localhost:3000'
+      run: npm run start &
+      env:
+        PORT: 3000
+    
+    - name: Wait for server
+      if: needs.setup.outputs.base_url == 'http://localhost:3000'
+      run: npx wait-on ${{ needs.setup.outputs.base_url }} --timeout 60000
+    
+    - name: Run Lighthouse CI
+      uses: treosh/lighthouse-ci-action@v10
+      with:
+        urls: |
+          ${{ needs.setup.outputs.base_url }}
+          ${{ needs.setup.outputs.base_url }}/auth/signin
+          ${{ needs.setup.outputs.base_url }}/dashboard
+        budgetPath: ${{ env.PERFORMANCE_BUDGET_FILE }}
+        uploadArtifacts: true
+        temporaryPublicStorage: true
+        configPath: '.lighthouserc.js'
+    
+    - name: Process Lighthouse results
+      run: |
+        echo "⚡ Processing Lighthouse results"
+        
+        # Extract key metrics from Lighthouse CI results
+        if [[ -f ".lighthouseci/results.json" ]]; then
+          PERFORMANCE_SCORE=$(jq -r '.[0].lhr.categories.performance.score * 100' .lighthouseci/results.json)
+          ACCESSIBILITY_SCORE=$(jq -r '.[0].lhr.categories.accessibility.score * 100' .lighthouseci/results.json)
+          BEST_PRACTICES_SCORE=$(jq -r '.[0].lhr.categories["best-practices"].score * 100' .lighthouseci/results.json)
+          SEO_SCORE=$(jq -r '.[0].lhr.categories.seo.score * 100' .lighthouseci/results.json)
+          
+          echo "PERFORMANCE_SCORE=$PERFORMANCE_SCORE" >> $GITHUB_ENV
+          echo "ACCESSIBILITY_SCORE=$ACCESSIBILITY_SCORE" >> $GITHUB_ENV
+          echo "BEST_PRACTICES_SCORE=$BEST_PRACTICES_SCORE" >> $GITHUB_ENV
+          echo "SEO_SCORE=$SEO_SCORE" >> $GITHUB_ENV
+          
+          # Check for performance regression
+          MIN_PERFORMANCE_SCORE=80
+          if (( $(echo "$PERFORMANCE_SCORE < $MIN_PERFORMANCE_SCORE" | bc -l) )); then
+            echo "PERFORMANCE_REGRESSION=true" >> $GITHUB_ENV
+          fi
+        fi
+    
+    - name: Lighthouse report
+      run: |
+        echo "## ⚡ Lighthouse Performance Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Performance**: ${PERFORMANCE_SCORE}%" >> $GITHUB_STEP_SUMMARY
+        echo "**Accessibility**: ${ACCESSIBILITY_SCORE}%" >> $GITHUB_STEP_SUMMARY
+        echo "**Best Practices**: ${BEST_PRACTICES_SCORE}%" >> $GITHUB_STEP_SUMMARY
+        echo "**SEO**: ${SEO_SCORE}%" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "$PERFORMANCE_REGRESSION" == "true" ]]; then
+          echo "❌ **Performance regression detected!**" >> $GITHUB_STEP_SUMMARY
+          echo "Performance score is below the minimum threshold." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ Performance scores meet requirements" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  # Load testing
+  load-testing:
+    name: Load Testing
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.should_run_load == 'true'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install k6
+      run: |
+        sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+        echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+        sudo apt-get update
+        sudo apt-get install k6
+    
+    - name: Setup Node.js for local testing
+      if: needs.setup.outputs.base_url == 'http://localhost:3000'
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Build and start local server
+      if: needs.setup.outputs.base_url == 'http://localhost:3000'
+      run: |
+        npm ci
+        npm run build
+        npm run start &
+        npx wait-on http://localhost:3000 --timeout 60000
+    
+    - name: Run load tests
+      run: |
+        echo "🚀 Running load tests against ${{ needs.setup.outputs.base_url }}"
+        
+        # Run different load test scenarios
+        BASE_URL="${{ needs.setup.outputs.base_url }}" k6 run tests/load/k6-load-tests.js --out json=load-test-results.json
+        
+        # Run API-specific load tests
+        BASE_URL="${{ needs.setup.outputs.base_url }}" k6 run tests/load/k6-api-tests.js --out json=api-load-test-results.json
+    
+    - name: Process load test results
+      run: |
+        echo "📊 Processing load test results"
+        
+        # Extract key metrics from k6 results
+        if [[ -f "load-test-results.json" ]]; then
+          AVG_RESPONSE_TIME=$(jq -r '.metrics.http_req_duration.values.avg' load-test-results.json)
+          P95_RESPONSE_TIME=$(jq -r '.metrics.http_req_duration.values["p(95)"]' load-test-results.json)
+          ERROR_RATE=$(jq -r '.metrics.http_req_failed.values.rate' load-test-results.json)
+          RPS=$(jq -r '.metrics.http_reqs.values.rate' load-test-results.json)
+          
+          echo "AVG_RESPONSE_TIME=$AVG_RESPONSE_TIME" >> $GITHUB_ENV
+          echo "P95_RESPONSE_TIME=$P95_RESPONSE_TIME" >> $GITHUB_ENV
+          echo "ERROR_RATE=$ERROR_RATE" >> $GITHUB_ENV
+          echo "RPS=$RPS" >> $GITHUB_ENV
+          
+          # Check for performance regression
+          MAX_AVG_RESPONSE_TIME=2000  # 2 seconds
+          MAX_ERROR_RATE=0.05         # 5%
+          
+          if (( $(echo "$AVG_RESPONSE_TIME > $MAX_AVG_RESPONSE_TIME" | bc -l) )); then
+            echo "LOAD_REGRESSION=true" >> $GITHUB_ENV
+          fi
+          
+          if (( $(echo "$ERROR_RATE > $MAX_ERROR_RATE" | bc -l) )); then
+            echo "LOAD_REGRESSION=true" >> $GITHUB_ENV
+          fi
+        fi
+    
+    - name: Load test report
+      run: |
+        echo "## 🚀 Load Test Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Average Response Time**: ${AVG_RESPONSE_TIME}ms" >> $GITHUB_STEP_SUMMARY
+        echo "**95th Percentile**: ${P95_RESPONSE_TIME}ms" >> $GITHUB_STEP_SUMMARY
+        echo "**Error Rate**: $(echo "scale=2; $ERROR_RATE * 100" | bc)%" >> $GITHUB_STEP_SUMMARY
+        echo "**Requests/Second**: $(echo "scale=2; $RPS" | bc)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "$LOAD_REGRESSION" == "true" ]]; then
+          echo "❌ **Load test regression detected!**" >> $GITHUB_STEP_SUMMARY
+          echo "Performance metrics are below acceptable thresholds." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ Load test performance meets requirements" >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: Upload load test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: load-test-results
+        path: |
+          load-test-results.json
+          api-load-test-results.json
+
+  # API performance testing
+  api-performance:
+    name: API Performance Testing
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.should_run_api == 'true'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies and build
+      if: needs.setup.outputs.base_url == 'http://localhost:3000'
+      run: |
+        npm ci
+        npm run build
+    
+    - name: Start local server
+      if: needs.setup.outputs.base_url == 'http://localhost:3000'
+      run: npm run start &
+      env:
+        PORT: 3000
+    
+    - name: Wait for server
+      if: needs.setup.outputs.base_url == 'http://localhost:3000'
+      run: npx wait-on ${{ needs.setup.outputs.base_url }} --timeout 60000
+    
+    - name: Run API performance tests
+      run: |
+        echo "🔧 Running API performance tests"
+        
+        # Test critical API endpoints
+        BASE_URL="${{ needs.setup.outputs.base_url }}"
+        
+        # Health check endpoint
+        HEALTH_RESPONSE_TIME=$(curl -w "%{time_total}" -s -o /dev/null "$BASE_URL/api/health")
+        echo "Health check response time: ${HEALTH_RESPONSE_TIME}s"
+        
+        # Test other critical endpoints
+        npm run test:api -- --testPathPattern="performance" --reporters=json --outputFile=api-performance-results.json
+    
+    - name: Process API performance results
+      run: |
+        echo "📈 Processing API performance results"
+        
+        if [[ -f "api-performance-results.json" ]]; then
+          TOTAL_TESTS=$(jq '.numTotalTests' api-performance-results.json)
+          PASSED_TESTS=$(jq '.numPassedTests' api-performance-results.json)
+          FAILED_TESTS=$(jq '.numFailedTests' api-performance-results.json)
+          
+          echo "TOTAL_API_TESTS=$TOTAL_TESTS" >> $GITHUB_ENV
+          echo "PASSED_API_TESTS=$PASSED_TESTS" >> $GITHUB_ENV
+          echo "FAILED_API_TESTS=$FAILED_TESTS" >> $GITHUB_ENV
+          
+          if [[ $FAILED_TESTS -gt 0 ]]; then
+            echo "API_PERFORMANCE_REGRESSION=true" >> $GITHUB_ENV
+          fi
+        fi
+    
+    - name: API performance report
+      run: |
+        echo "## 🔧 API Performance Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Total Tests**: $TOTAL_API_TESTS" >> $GITHUB_STEP_SUMMARY
+        echo "**Passed**: $PASSED_API_TESTS" >> $GITHUB_STEP_SUMMARY
+        echo "**Failed**: $FAILED_API_TESTS" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "$API_PERFORMANCE_REGRESSION" == "true" ]]; then
+          echo "❌ **API performance regression detected!**" >> $GITHUB_STEP_SUMMARY
+          echo "Some API endpoints are not meeting performance requirements." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ API performance meets requirements" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  # Performance summary and regression detection
+  performance-summary:
+    name: Performance Summary
+    runs-on: ubuntu-latest
+    needs: [setup, bundle-analysis, lighthouse-audit, load-testing, api-performance]
+    if: always()
+    
+    steps:
+    - name: Generate performance summary
+      run: |
+        echo "## ⚡ Performance Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Test Date**: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "**Target Environment**: ${{ github.event.inputs.target_environment || 'staging' }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Bundle analysis results
+        if [[ "${{ needs.bundle-analysis.result }}" == "success" ]]; then
+          echo "✅ **Bundle Analysis**: PASSED" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ needs.bundle-analysis.result }}" == "failure" ]]; then
+          echo "❌ **Bundle Analysis**: FAILED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⏭️ **Bundle Analysis**: SKIPPED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Lighthouse results
+        if [[ "${{ needs.lighthouse-audit.result }}" == "success" ]]; then
+          echo "✅ **Lighthouse Audit**: PASSED" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ needs.lighthouse-audit.result }}" == "failure" ]]; then
+          echo "❌ **Lighthouse Audit**: FAILED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⏭️ **Lighthouse Audit**: SKIPPED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Load testing results
+        if [[ "${{ needs.load-testing.result }}" == "success" ]]; then
+          echo "✅ **Load Testing**: PASSED" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ needs.load-testing.result }}" == "failure" ]]; then
+          echo "❌ **Load Testing**: FAILED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⏭️ **Load Testing**: SKIPPED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # API performance results
+        if [[ "${{ needs.api-performance.result }}" == "success" ]]; then
+          echo "✅ **API Performance**: PASSED" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ needs.api-performance.result }}" == "failure" ]]; then
+          echo "❌ **API Performance**: FAILED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⏭️ **API Performance**: SKIPPED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Recommendations**:" >> $GITHUB_STEP_SUMMARY
+        echo "- Review failed tests and address performance issues" >> $GITHUB_STEP_SUMMARY
+        echo "- Check artifacts for detailed performance reports" >> $GITHUB_STEP_SUMMARY
+        echo "- Monitor performance metrics after deployment" >> $GITHUB_STEP_SUMMARY
+    
+    - name: Performance regression gate
+      run: |
+        REGRESSION_DETECTED=false
+        
+        if [[ "${{ needs.bundle-analysis.result }}" == "failure" ]]; then
+          echo "🚫 Performance gate failed: Bundle size regression"
+          REGRESSION_DETECTED=true
+        fi
+        
+        if [[ "${{ needs.lighthouse-audit.result }}" == "failure" ]]; then
+          echo "🚫 Performance gate failed: Lighthouse performance regression"
+          REGRESSION_DETECTED=true
+        fi
+        
+        if [[ "${{ needs.load-testing.result }}" == "failure" ]]; then
+          echo "🚫 Performance gate failed: Load testing regression"
+          REGRESSION_DETECTED=true
+        fi
+        
+        if [[ "${{ needs.api-performance.result }}" == "failure" ]]; then
+          echo "🚫 Performance gate failed: API performance regression"
+          REGRESSION_DETECTED=true
+        fi
+        
+        if [[ "$REGRESSION_DETECTED" == "true" ]]; then
+          echo "❌ Performance regression detected - blocking deployment"
+          exit 1
+        else
+          echo "✅ Performance gate passed"
+        fi
+    
+    - name: Create performance issue if regressions detected
+      if: failure()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const issue = await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `⚡ Performance Regression Detected - ${new Date().toISOString().split('T')[0]}`,
+            body: `## Performance Regression Report
+            
+            **Branch**: ${{ github.ref_name }}
+            **Commit**: ${{ github.sha }}
+            **Workflow Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            
+            ### Failed Performance Tests
+            
+            ${{ needs.bundle-analysis.result == 'failure' && '- ❌ Bundle Analysis' || '' }}
+            ${{ needs.lighthouse-audit.result == 'failure' && '- ❌ Lighthouse Audit' || '' }}
+            ${{ needs.load-testing.result == 'failure' && '- ❌ Load Testing' || '' }}
+            ${{ needs.api-performance.result == 'failure' && '- ❌ API Performance' || '' }}
+            
+            ### Action Required
+            
+            1. Review the failed performance tests in the workflow run
+            2. Optimize code to improve performance metrics
+            3. Update performance budgets if necessary
+            4. Re-run performance tests to verify improvements
+            
+            **Priority**: High
+            **Labels**: Performance, Regression, Optimization`,
+            labels: ['performance', 'regression', 'high-priority']
+          });
+          
+          console.log(`Created performance issue: ${issue.data.html_url}`);

@@ -4,16 +4,16 @@ import { config } from './config';
 
 // Redis connection instance
 export const redis = new Redis(config.redis.url, {
-  retryDelayOnFailover: 100,
+  // retryDelayOnFailover: 100, // This option doesn't exist in newer ioredis versions
   enableReadyCheck: false,
   maxRetriesPerRequest: null,
 });
 
 // Redis connection for BullMQ
 export const redisConnection = {
-  host: 'localhost',
+  host: 'redis',
   port: 6379,
-  password: 'aipromotredis',
+  password: 'redispassword',
 };
 
 // Queue configurations
@@ -33,8 +33,7 @@ const defaultQueueOptions: QueueOptions = {
 const defaultWorkerOptions: WorkerOptions = {
   connection: redisConnection,
   concurrency: 5,
-  removeOnComplete: 10,
-  removeOnFail: 50,
+  // removeOnComplete and removeOnFail are configured per queue, not per worker
 };
 
 // ============================================
@@ -66,7 +65,7 @@ export const analyticsQueue = new Queue('analytics', {
   defaultJobOptions: {
     ...defaultQueueOptions.defaultJobOptions,
     priority: 3, // Lower priority for analytics
-    repeat: { pattern: '0 */6 * * *' }, // Every 6 hours
+    // repeat option is applied when adding jobs, not in default options
   },
 });
 

@@ -1,9 +1,8 @@
-import { FastifyPluginAsync } from 'fastify'
-import { FastifyRequest } from 'fastify'
+import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify'
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import pdfParse from 'pdf-parse'
-import multer from 'multer'
+import type { FileUploadRequest, FileDeleteRequest, FileUploadResponse } from '../../types/routes'
 
 const s3Client = new S3Client({
   region: process.env.AWS_REGION || 'us-east-1',

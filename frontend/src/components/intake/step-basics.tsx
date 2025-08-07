@@ -26,6 +26,8 @@ export function StepBasics() {
   const { register, formState: { errors }, watch, setValue } = useFormContext<CompleteIntake>()
   const selectedMarkets = watch('startupBasics.markets') || []
   const selectedLanguages = watch('startupBasics.languages') || []
+  const category = watch('startupBasics.category')
+  const stage = watch('startupBasics.stage')
 
   const toggleMarket = (market: string, checked: boolean) => {
     if (checked) {
@@ -52,54 +54,48 @@ export function StepBasics() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="space-y-2">
-          <Label htmlFor="name">Company Name *</Label>
           <Input
             id="name"
+            label="Company Name *"
             {...register('startupBasics.name')}
             placeholder="e.g., Acme AI"
+            error={errors.startupBasics?.name?.message}
+            success={!errors.startupBasics?.name && watch('startupBasics.name')?.length > 0}
           />
-          {errors.startupBasics?.name && (
-            <p className="text-sm text-red-600">{errors.startupBasics.name.message}</p>
-          )}
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="url">Website URL</Label>
           <Input
             id="url"
+            label="Website URL"
             {...register('startupBasics.url')}
             placeholder="https://yourcompany.com"
+            error={errors.startupBasics?.url?.message}
+            success={!errors.startupBasics?.url && watch('startupBasics.url')?.length > 0}
           />
-          {errors.startupBasics?.url && (
-            <p className="text-sm text-red-600">{errors.startupBasics.url.message}</p>
-          )}
         </div>
       </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="tagline">Tagline *</Label>
-        <Input
-          id="tagline"
-          {...register('startupBasics.tagline')}
-          placeholder="e.g., AI-powered sales automation for startups"
-        />
-        {errors.startupBasics?.tagline && (
-          <p className="text-sm text-red-600">{errors.startupBasics.tagline.message}</p>
-        )}
-      </div>
+      <Input
+        id="tagline"
+        label="Tagline *"
+        {...register('startupBasics.tagline')}
+        placeholder="e.g., AI-powered sales automation for startups"
+        error={errors.startupBasics?.tagline?.message}
+        success={!errors.startupBasics?.tagline && watch('startupBasics.tagline')?.length > 0}
+      />
 
-      <div className="space-y-2">
-        <Label htmlFor="description">Company Description *</Label>
-        <Textarea
-          id="description"
-          {...register('startupBasics.description')}
-          placeholder="Describe what your company does, the problem you solve, and your solution..."
-          rows={4}
-        />
-        {errors.startupBasics?.description && (
-          <p className="text-sm text-red-600">{errors.startupBasics.description.message}</p>
-        )}
-      </div>
+      <Textarea
+        id="description"
+        label="Company Description *"
+        {...register('startupBasics.description')}
+        placeholder="Describe what your company does, the problem you solve, and your solution..."
+        rows={4}
+        maxLength={1000}
+        showCharCount
+        error={errors.startupBasics?.description?.message}
+        success={!errors.startupBasics?.description && watch('startupBasics.description')?.length >= 50}
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="space-y-2">
